@@ -47,7 +47,7 @@ export const pieChartUniformValues = (
         0, transform.pixelsToGLUnits[1]
     ]);
 
-    const colorsRaw = layer.paint.get('pie-chart-colors') as unknown as string[];
+    const colorsRaw = layer.paint.get('pie-chart-colors');
     const colorData = new Float32Array(MAX_SLICES * 4);
     for (let i = 0; i < Math.min(colorsRaw.length, MAX_SLICES); i++) {
         const c = Color.parse(colorsRaw[i]);
@@ -69,7 +69,7 @@ export const pieChartUniformValues = (
     const sc = strokeColorRaw.toPremultipliedRenderColor(null);
 
     return {
-        'u_matrix': painter.translatePosMatrix(coord.projMatrix, tile, [0, 0], 'viewport') as Float32Array,
+        'u_matrix': painter.translatePosMatrix(coord.projMatrix, tile, [0, 0], 'viewport'),
         'u_extrude_scale': extrudeScale,
         'u_camera_to_center_distance': transform.getCameraToCenterDistance(transform.projection),
         'u_colors': colorData,

@@ -1,72 +1,50 @@
-// Hand-written — do not run codegen for this file.
+// This file is generated. Edit build/generate-style-code.ts, then run `npm run codegen`.
 /* eslint-disable */
+
+import styleSpec from '../../style-spec/reference/latest';
 
 import {
     Properties,
+    ColorRampProperty,
     DataDrivenProperty,
     DataConstantProperty
 } from '../properties';
 
+
 import type Color from '../../style-spec/util/color';
+import type Formatted from '../../style-spec/expression/types/formatted';
+import type ResolvedImage from '../../style-spec/expression/types/resolved_image';
+import type {StylePropertySpecification} from '../../style-spec/style-spec';
 
 export type LayoutProps = {
     "visibility": DataConstantProperty<"visible" | "none">;
 };
 let layout: Properties<LayoutProps>;
 export const getLayoutProperties = (): Properties<LayoutProps> => layout || (layout = new Properties({
-    "visibility": new DataConstantProperty({
-        "type": "enum",
-        "values": {"visible": {}, "none": {}},
-        "default": "visible",
-        "property-type": "constant"
-    } as any),
+    "visibility": new DataConstantProperty(styleSpec["layout_pie-chart"]["visibility"]),
 }));
 
 export type PaintProps = {
     "pie-chart-mask": DataDrivenProperty<number>;
-    "pie-chart-colors": DataConstantProperty<string[]>;
-    "pie-chart-labels": DataConstantProperty<string[]>;
+    "pie-chart-colors": DataConstantProperty<Array<string>>;
+    "pie-chart-labels": DataConstantProperty<Array<string>>;
     "pie-chart-size": DataDrivenProperty<number>;
     "pie-chart-center-size": DataConstantProperty<number>;
     "pie-chart-stroke-color": DataConstantProperty<Color>;
     "pie-chart-stroke-width": DataConstantProperty<number>;
     "pie-chart-divider-width": DataConstantProperty<number>;
+    "pie-chart-stroke-color-use-theme": DataDrivenProperty<string>;
 };
 
 let paint: Properties<PaintProps>;
 export const getPaintProperties = (): Properties<PaintProps> => paint || (paint = new Properties({
-    "pie-chart-mask": new DataDrivenProperty({
-        "type": "number", "default": 0, "property-type": "data-driven",
-        "expression": {"interpolated": false, "parameters": ["zoom", "feature"]}, "transition": false
-    } as any),
-    "pie-chart-colors": new DataConstantProperty({
-        "type": "array", "value": "string",
-        "default": ["#e41a1c","#377eb8","#4daf4a","#984ea3","#ff7f00","#a65628"],
-        "property-type": "data-constant", "transition": false
-    } as any),
-    "pie-chart-labels": new DataConstantProperty({
-        "type": "array", "value": "string",
-        "default": ["Slice 1","Slice 2","Slice 3","Slice 4","Slice 5","Slice 6"],
-        "property-type": "data-constant", "transition": false
-    } as any),
-    "pie-chart-size": new DataDrivenProperty({
-        "type": "number", "default": 50, "minimum": 0, "property-type": "data-driven",
-        "expression": {"interpolated": true, "parameters": ["zoom", "feature"]}, "transition": false
-    } as any),
-    "pie-chart-center-size": new DataConstantProperty({
-        "type": "number", "default": 0, "minimum": 0, "property-type": "data-constant",
-        "expression": {"interpolated": true, "parameters": ["zoom"]}, "transition": false
-    } as any),
-    "pie-chart-stroke-color": new DataConstantProperty({
-        "type": "color", "default": "#000000", "property-type": "data-constant",
-        "expression": {"interpolated": true, "parameters": ["zoom"]}, "transition": false
-    } as any),
-    "pie-chart-stroke-width": new DataConstantProperty({
-        "type": "number", "default": 2, "minimum": 0, "property-type": "data-constant",
-        "expression": {"interpolated": true, "parameters": ["zoom"]}, "transition": false
-    } as any),
-    "pie-chart-divider-width": new DataConstantProperty({
-        "type": "number", "default": 2, "minimum": 0, "property-type": "data-constant",
-        "expression": {"interpolated": true, "parameters": ["zoom"]}, "transition": false
-    } as any),
+    "pie-chart-mask": new DataDrivenProperty(styleSpec["paint_pie-chart"]["pie-chart-mask"]),
+    "pie-chart-colors": new DataConstantProperty(styleSpec["paint_pie-chart"]["pie-chart-colors"]),
+    "pie-chart-labels": new DataConstantProperty(styleSpec["paint_pie-chart"]["pie-chart-labels"]),
+    "pie-chart-size": new DataDrivenProperty(styleSpec["paint_pie-chart"]["pie-chart-size"]),
+    "pie-chart-center-size": new DataConstantProperty(styleSpec["paint_pie-chart"]["pie-chart-center-size"]),
+    "pie-chart-stroke-color": new DataConstantProperty(styleSpec["paint_pie-chart"]["pie-chart-stroke-color"]),
+    "pie-chart-stroke-width": new DataConstantProperty(styleSpec["paint_pie-chart"]["pie-chart-stroke-width"]),
+    "pie-chart-divider-width": new DataConstantProperty(styleSpec["paint_pie-chart"]["pie-chart-divider-width"]),
+    "pie-chart-stroke-color-use-theme": new DataDrivenProperty({"type":"string","default":"default","property-type":"data-driven"}),
 }));
