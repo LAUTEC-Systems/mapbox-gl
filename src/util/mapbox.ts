@@ -13,7 +13,6 @@
 
 import assert from '../style-spec/util/assert';
 import config from './config';
-import webpSupported from './webp_supported';
 import {isMapboxHTTPURL, isMapboxURL} from './mapbox_url';
 import {createSkuToken, SKU_ID} from './sku_token';
 import {version as sdkVersion} from '../../package.json';
@@ -47,8 +46,8 @@ type EventCallback = (err?: Error | null) => void;
 export const AUTH_ERR_MSG: string = 'NO_ACCESS_TOKEN';
 
 export class RequestManager {
-    _skuToken: string;
-    _skuTokenExpiresAt: number;
+    _skuToken!: string;
+    _skuTokenExpiresAt!: number;
     _transformRequestFn: RequestTransformFunction | null | undefined;
     _customAccessToken: string | null | undefined;
     _silenceAuthErrors: boolean;
@@ -147,7 +146,8 @@ export class RequestManager {
         if (tileURL && !isMapboxURL(tileURL)) return tileURL;
 
         const urlObject = parseUrl(tileURL);
-        const extension = webpSupported.supported ? '.webp' : '$1';
+        // WebP is supported in all browsers that can run GL JS (which requires WebGL2)
+        const extension = '.webp';
 
         // The v4 mapbox tile API supports 512x512 image tiles but they must be requested as '@2x' tiles.
         const use2xAs512 = rasterTileSize && urlObject.authority !== 'raster' && rasterTileSize === 512;
@@ -543,7 +543,7 @@ export class MapLoadEvent extends TelemetryEvent {
         [_: number]: boolean;
     };
     skuToken: string;
-    errorCb: EventCallback;
+    errorCb!: EventCallback;
 
     constructor() {
         super('map.load');
@@ -698,7 +698,7 @@ type MetricsEventPayload = {
     counters?: MetricsEventCounter[]
 };
 class MetricsEvent extends TelemetryEvent {
-    data: MetricsEventPayload;
+    data!: MetricsEventPayload;
     constructor(data?: MetricsEventPayload) {
         super('metrics');
         if (data) this.data = data;
@@ -740,7 +740,7 @@ export class MapSessionAPI extends TelemetryEvent {
         [_: number]: boolean;
     };
     skuToken: string;
-    errorCb: EventCallback;
+    errorCb!: EventCallback;
 
     constructor() {
         super('map.auth');

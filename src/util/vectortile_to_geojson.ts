@@ -25,8 +25,8 @@ class Feature implements GeoJSONFeature {
     _y: number;
     _z: number;
 
-    layer: LayerSpecification;
-    source: string;
+    layer!: LayerSpecification;
+    source!: string;
     sourceLayer?: string;
     state?: FeatureState;
     variants?: Record<string, FeatureVariant[]>;
@@ -56,7 +56,7 @@ class Feature implements GeoJSONFeature {
         if (this._geometry === undefined && this._vectorTileFeature) {
             this._geometry = this._vectorTileFeature.toGeoJSON(this._x, this._y, this._z).geometry;
         }
-        return this._geometry;
+        return this._geometry!;
     }
 
     set geometry(g: GeoJSON.Geometry) {
@@ -64,7 +64,7 @@ class Feature implements GeoJSONFeature {
     }
 
     toJSON(): GeoJSON.Feature {
-        const json = {
+        const json: GeoJSON.Feature & Partial<Pick<Feature, typeof customProps[number]>> = {
             type: 'Feature',
             state: undefined,
             geometry: this.geometry,
@@ -72,10 +72,10 @@ class Feature implements GeoJSONFeature {
         };
 
         for (const key of customProps) {
-            if (this[key] !== undefined) json[key] = this[key];
+            if (this[key] !== undefined) (json as Partial<Record<typeof key, Feature[typeof key]>>)[key] = this[key];
         }
 
-        return json as GeoJSON.Feature;
+        return json;
     }
 }
 
@@ -111,7 +111,7 @@ export type FeatureVariant = {
  * Unlike features returned for root style featuresets, `TargetFeature` omits the `layer`, `source`, and `sourceLayer` properties if the feature belongs to import style.
  */
 export class TargetFeature extends Feature {
-    override variants: never;
+    override variants!: never;
 
     /**
      * The target descriptor of the feature.
@@ -144,7 +144,7 @@ export class TargetFeature extends Feature {
     override toJSON(): GeoJSON.Feature & FeatureVariant {
         const json = super.toJSON() as GeoJSON.Feature & FeatureVariant;
 
-        json.target = this.target;
+        json.target = this.target!;
         json.namespace = this.namespace;
 
         return json;

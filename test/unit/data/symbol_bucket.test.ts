@@ -6,10 +6,13 @@ import {VectorTile} from '@mapbox/vector-tile';
 import {CollisionBoxArray} from '../../../src/data/array_types';
 import {performSymbolLayout, postRasterizationSymbolLayout, SymbolBucketConstants} from '../../../src/symbol/symbol_layout';
 import {Placement} from '../../../src/symbol/placement';
-import {DefaultPlacementAlgorithm} from '../../../src/symbol/placement_algorithms/default';
 import Transform from '../../../src/geo/transform';
-import {OverscaledTileID} from '../../../src/source/tile_id';
+import {OverscaledTileID, CanonicalTileID, UnwrappedTileID} from '../../../src/source/tile_id';
 import Tile from '../../../src/source/tile';
+import Point from '@mapbox/point-geometry';
+import TriangleGridIndex from '../../../src/util/triangle_grid_index';
+import {ReplacementSource} from '../../../3d-style/source/replacement_source';
+import {LayerTypeMask} from '../../../3d-style/util/conflation';
 import CrossTileSymbolIndex from '../../../src/symbol/cross_tile_symbol_index';
 import FeatureIndex from '../../../src/data/feature_index';
 import {createSymbolBucket} from '../../util/create_symbol_layer';
@@ -20,6 +23,12 @@ import SegmentVector from '../../../src/data/segment';
 import SymbolBucket from '../../../src/data/bucket/symbol_bucket';
 import SymbolStyleLayer from '../../../src/style/style_layer/symbol_style_layer';
 import featureFilter from '../../../src/style-spec/feature_filter/index';
+import {GlobalPlacement} from '../../../src/placement/global_placement';
+import {SymbolIdRangeAllocator} from '../../../src/placement/symbol_id_range_allocator';
+import {getSymbolPlacementTileProjectionMatrix} from '../../../src/geo/projection/projection_util';
+import EXTENT from '../../../src/style-spec/data/extent';
+import {makeFQID} from '../../../src/util/fqid';
+import {subgroupOrderForLayerPosition} from '../../../src/placement/symbol_placement_parameters';
 
 import type CollisionIndex from '../../../src/symbol/collision_index';
 import type {BucketPart} from '../../../src/symbol/placement';
@@ -53,7 +62,7 @@ test('SymbolBucket', () => {
     const bucketB = bucketSetup();
     const projection = getProjection({name: 'mercator'});
     const options = {iconDependencies: {}, glyphDependencies: {}};
-    const placement = new Placement(transform, 0, true, new DefaultPlacementAlgorithm());
+    const placement = new Placement(transform, 0, true);
     const tileID = new OverscaledTileID(0, 0, 0, 0, 0);
     const crossTileSymbolIndex = new CrossTileSymbolIndex();
     const painter = {transform: {projection}};
@@ -98,6 +107,331 @@ test('SymbolBucket', () => {
     place(bucketB.layers[0], tileB);
     const b2 = ci.grid.keysLength();
     expect(b2).toEqual(a2);
+});
+
+test('SymbolBucket#addToPlacement places a real symbol via the new placement pipeline', () => {
+    const bucket = bucketSetup();
+    const projection = getProjection({name: 'mercator'});
+    const options = {iconDependencies: {}, glyphDependencies: {}};
+
+    bucket.populate([{feature}], options);
+    const bucketData = performSymbolLayout(bucket, stacks, glyphPositions, null, null, null, null, null, null, projection);
+    postRasterizationSymbolLayout(bucket, bucketData, null, null, null, null, projection, null, null, {});
+
+    const tileID = new OverscaledTileID(0, 0, 0, 0, 0);
+    const placementTransform = new Transform();
+    placementTransform.resize(100, 100);
+
+    const posMatrix = getSymbolPlacementTileProjectionMatrix(tileID, projection, placementTransform, 'mercator');
+    const invMatrix = projection.createInversionMatrix(placementTransform, tileID.canonical);
+    const mercatorCenter: [number, number] = [0, 0];
+    const textPixelRatio = 512 / EXTENT;
+    const tile = {tileID, collisionBoxArray, latestFeatureIndex: null};
+
+    const globalPlacement = new GlobalPlacement();
+    const idRangeAllocator = new SymbolIdRangeAllocator();
+    const showSymbolVariantSpy = vi.spyOn(bucket, 'showSymbolVariant');
+
+    globalPlacement.startPlacement(0, 100, 100);
+    globalPlacement.startSymbolSourceProcessing(bucket);
+    bucket.addToPlacement(globalPlacement, idRangeAllocator, 1, posMatrix, invMatrix, mercatorCenter, placementTransform, textPixelRatio, tile, null, new Map(), 0, null);
+
+    // addToPlacement seeds the (until now empty) opacity buffer with one hidden entry per glyph
+    // quad, since new placement never runs Placement#updateBucketOpacities to build it from scratch.
+    expect(bucket.text.opacityVertexArray.length).toBeGreaterThan(0);
+    for (let i = 0; i < bucket.text.opacityVertexArray.length; i++) {
+        expect(bucket.text.opacityVertexArray.uint32[i]).toEqual(0);
+    }
+
+    globalPlacement.finishSourceProcessing();
+    globalPlacement.finishPlacementRun();
+
+    // The fixture's single point feature has no colliding neighbor, so it should place successfully
+    // (was invisible -> now visible), proving id allocation, size evaluation, anchor projection and
+    // the collision grid all agree end to end.
+    expect(showSymbolVariantSpy).toHaveBeenCalledOnce();
+    // showSymbolVariant wrote full opacity (packed 0xFFFFFFFF) into the placed text's glyph quads.
+    for (let i = 0; i < bucket.text.opacityVertexArray.length; i++) {
+        expect(bucket.text.opacityVertexArray.uint32[i]).toEqual(4294967295);
+    }
+    // Recorded so the next run feeds this instance's priority back as VARIANT_VISIBLE.
+    expect(bucket.placementVariantVisible).toEqual([true]);
+
+    // A second run with the same (still non-colliding) symbol should keep it visible without a
+    // redundant showSymbolVariant call, since there is no visibility transition.
+    showSymbolVariantSpy.mockClear();
+    globalPlacement.startPlacement(1, 100, 100);
+    globalPlacement.startSymbolSourceProcessing(bucket);
+    bucket.addToPlacement(globalPlacement, idRangeAllocator, 1, posMatrix, invMatrix, mercatorCenter, placementTransform, textPixelRatio, tile, null, new Map(), 0, null);
+    globalPlacement.finishSourceProcessing();
+    globalPlacement.finishPlacementRun();
+
+    expect(showSymbolVariantSpy).not.toHaveBeenCalled();
+
+    // A tile returning from the cache drops new placement's decisions: everything hides and the
+    // per-instance visibility record clears, so a stale "visible" doesn't outrank on-screen symbols.
+    bucket.resetPlacementVisibility();
+
+    expect(bucket.placementVariantVisible).toEqual([false]);
+    for (let i = 0; i < bucket.text.opacityVertexArray.length; i++) {
+        expect(bucket.text.opacityVertexArray.uint32[i]).toEqual(0);
+    }
+});
+
+const PLACE_LABEL_SOURCE_LAYER_INDEX = 3;
+const PLACE_LABEL_FEATURE_INDEX = 10;
+
+// Builds a mock FootprintSource whose single footprint is a rectangle covering the whole tile,
+// mirroring the createFootprint/createMockSource helpers in replacement_source.test.ts. `order`
+// must be less than ReplacementOrderLandmark (and >= the checked styleLayerOrder) for
+// skipClipping to not skip it.
+function createFullTileFootprintSource(tileId: UnwrappedTileID, order: number) {
+    const min = new Point(0, 0);
+    const max = new Point(EXTENT, EXTENT);
+    const vertices = [
+        new Point(min.x, min.y),
+        new Point(max.x, min.y),
+        new Point(max.x, max.y),
+        new Point(min.x, max.y)
+    ];
+    const indices = [0, 1, 2, 2, 3, 0];
+    const grid = new TriangleGridIndex(vertices, indices, 6);
+    const footprint = {vertices, indices, grid, min, max};
+
+    return {
+        getSourceId: () => 'test-clip-source',
+        getFootprints: () => [{footprint, id: tileId}],
+        getOrder: () => order,
+        getClipMask: () => LayerTypeMask.Symbol,
+        getClipScope: () => []
+    };
+}
+
+test('SymbolBucket#addToPlacement hides a symbol clipped by a 3D-object/clip-layer footprint', () => {
+    const bucket = bucketSetup();
+    const projection = getProjection({name: 'mercator'});
+    const options = {iconDependencies: {}, glyphDependencies: {}};
+
+    bucket.populate([{feature}], options);
+    const bucketData = performSymbolLayout(bucket, stacks, glyphPositions, null, null, null, null, null, null, projection);
+    postRasterizationSymbolLayout(bucket, bucketData, null, null, null, null, projection, null, null, {});
+
+    const tileID = new OverscaledTileID(0, 0, 0, 0, 0);
+    const placementTransform = new Transform();
+    placementTransform.resize(100, 100);
+
+    const posMatrix = getSymbolPlacementTileProjectionMatrix(tileID, projection, placementTransform, 'mercator');
+    const invMatrix = projection.createInversionMatrix(placementTransform, tileID.canonical);
+    const mercatorCenter: [number, number] = [0, 0];
+    const textPixelRatio = 512 / EXTENT;
+    const tile = {tileID, collisionBoxArray, latestFeatureIndex: null};
+
+    const replacementSource = new ReplacementSource();
+    replacementSource._setSources([createFullTileFootprintSource(new UnwrappedTileID(0, new CanonicalTileID(0, 0, 0)), 5)]);
+
+    const globalPlacement = new GlobalPlacement();
+    const idRangeAllocator = new SymbolIdRangeAllocator();
+    const showSymbolVariantSpy = vi.spyOn(bucket, 'showSymbolVariant');
+
+    globalPlacement.startPlacement(0, 100, 100);
+    globalPlacement.startSymbolSourceProcessing(bucket);
+    bucket.addToPlacement(globalPlacement, idRangeAllocator, 1, posMatrix, invMatrix, mercatorCenter, placementTransform, textPixelRatio, tile, null, new Map(), 0, {}, replacementSource);
+    globalPlacement.finishSourceProcessing();
+    globalPlacement.finishPlacementRun();
+
+    // The symbol's anchor falls inside the clip footprint, so no geometry was fed for it: it never
+    // gets a chance to place, unlike the equivalent unclipped run in the previous test.
+    expect(showSymbolVariantSpy).not.toHaveBeenCalled();
+    expect(bucket.placementVariantVisible).toEqual([false]);
+    for (let i = 0; i < bucket.text.opacityVertexArray.length; i++) {
+        expect(bucket.text.opacityVertexArray.uint32[i]).toEqual(0);
+    }
+});
+
+function bucketSetupWithPlacementProps(placementPriority?: number, placementGroup?: string): SymbolBucket {
+    const paint: Record<string, number> = {};
+    if (placementPriority !== undefined) paint['placement-priority'] = placementPriority;
+    if (placementGroup !== undefined) paint['placement-group'] = placementGroup;
+    const layer = new SymbolStyleLayer({
+        id: 'test',
+        type: 'symbol',
+        layout: {'text-font': ['Test'], 'text-field': 'abcde'},
+        paint,
+        filter: featureFilter()
+    }, 'scope');
+    layer.recalculate({zoom: 0});
+    return new SymbolBucket({
+        overscaling: 1,
+        zoom: 0,
+        collisionBoxArray,
+        layers: [layer],
+        sourceLayerIndex: PLACE_LABEL_SOURCE_LAYER_INDEX,
+        projection: {name: 'mercator'}
+    });
+}
+
+function fixtureFeatureIndex(tileID: OverscaledTileID, promoteId?: string): FeatureIndex {
+    const featureIndex = new FeatureIndex(tileID, promoteId);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    featureIndex.rawTileData = vectorStub;
+    return featureIndex;
+}
+
+function placeAndCapturePriority(bucket: SymbolBucket, groupOrders: Map<string, number>, styleLayerOrder: number, withFeatureIndex = false, featureStates = {}, promoteId?: string) {
+    const projection = getProjection({name: 'mercator'});
+    const options = {iconDependencies: {}, glyphDependencies: {}};
+    bucket.populate([{feature, index: PLACE_LABEL_FEATURE_INDEX, sourceLayerIndex: PLACE_LABEL_SOURCE_LAYER_INDEX}], options);
+    const bucketData = performSymbolLayout(bucket, stacks, glyphPositions, null, null, null, null, null, null, projection);
+    postRasterizationSymbolLayout(bucket, bucketData, null, null, null, null, projection, null, null, {});
+
+    const tileID = new OverscaledTileID(0, 0, 0, 0, 0);
+    const placementTransform = new Transform();
+    placementTransform.resize(100, 100);
+    const posMatrix = getSymbolPlacementTileProjectionMatrix(tileID, projection, placementTransform, 'mercator');
+    const invMatrix = projection.createInversionMatrix(placementTransform, tileID.canonical);
+    const mercatorCenter: [number, number] = [0, 0];
+    const textPixelRatio = 512 / EXTENT;
+    const tile = {tileID, collisionBoxArray, latestFeatureIndex: withFeatureIndex ? fixtureFeatureIndex(tileID, promoteId) : null};
+
+    const globalPlacement = new GlobalPlacement();
+    const idRangeAllocator = new SymbolIdRangeAllocator();
+    const startVariantSpy = vi.spyOn(globalPlacement, 'startSymbolVariantProcessing');
+
+    globalPlacement.startPlacement(0, 100, 100);
+    globalPlacement.startSymbolSourceProcessing(bucket);
+    bucket.addToPlacement(globalPlacement, idRangeAllocator, 1, posMatrix, invMatrix, mercatorCenter, placementTransform, textPixelRatio, tile, null, groupOrders, styleLayerOrder, featureStates, null);
+    globalPlacement.finishSourceProcessing();
+    globalPlacement.finishPlacementRun();
+
+    expect(startVariantSpy).toHaveBeenCalledOnce();
+    return startVariantSpy.mock.calls[0][1];
+}
+
+test('SymbolBucket#addToPlacement feeds placement-priority and a matched placement-group order', () => {
+    const bucket = bucketSetupWithPlacementProps(5, 'group-a');
+    const groupOrders = new Map([[makeFQID('group-a', 'scope'), 42]]);
+
+    const priority = placeAndCapturePriority(bucket, groupOrders, 7);
+
+    expect(priority.symbolPlacementPriority).toEqual(5);
+    expect(priority.placementSubgroupOrder).toEqual(42);
+    expect(priority.styleLayerOrder).toEqual(7);
+});
+
+test('SymbolBucket#addToPlacement falls back to the layer\'s implicit group when placement-group is unset', () => {
+    const bucket = bucketSetupWithPlacementProps(undefined, undefined);
+
+    const priority = placeAndCapturePriority(bucket, new Map(), 7);
+
+    expect(priority.symbolPlacementPriority).toEqual(0);
+    expect(priority.placementSubgroupOrder).toEqual(subgroupOrderForLayerPosition(7));
+});
+
+test('SymbolBucket#addToPlacement falls back to the layer\'s implicit group when placement-group matches no layer', () => {
+    const bucket = bucketSetupWithPlacementProps(undefined, 'no-such-group');
+
+    const priority = placeAndCapturePriority(bucket, new Map(), 7);
+
+    expect(priority.symbolPlacementPriority).toEqual(0);
+    expect(priority.placementSubgroupOrder).toEqual(subgroupOrderForLayerPosition(7));
+});
+
+// The fixture feature (`place_label` #10, Rochester) carries scalerank 4 and type "city".
+test('SymbolBucket#addToPlacement evaluates a data-driven placement-priority per feature', () => {
+    const bucket = bucketSetupWithPlacementProps(['get', 'scalerank'], undefined);
+
+    const priority = placeAndCapturePriority(bucket, new Map(), 7, true);
+
+    expect(priority.symbolPlacementPriority).toEqual(4);
+});
+
+test('SymbolBucket#addToPlacement resolves a data-driven placement-group per feature', () => {
+    const bucket = bucketSetupWithPlacementProps(undefined, ['get', 'type']);
+    const groupOrders = new Map([[makeFQID('city', 'scope'), 42]]);
+
+    const priority = placeAndCapturePriority(bucket, groupOrders, 7, true);
+
+    expect(priority.placementSubgroupOrder).toEqual(42);
+});
+
+test('SymbolBucket#addToPlacement falls back to the implicit group when a data-driven placement-group matches no layer', () => {
+    const bucket = bucketSetupWithPlacementProps(undefined, ['get', 'type']);
+
+    const priority = placeAndCapturePriority(bucket, new Map(), 7, true);
+
+    expect(priority.placementSubgroupOrder).toEqual(subgroupOrderForLayerPosition(7));
+});
+
+test('SymbolBucket#addToPlacement resolves a feature-state-driven placement-group per feature', () => {
+    const bucket = bucketSetupWithPlacementProps(undefined, ['feature-state', 'grp']);
+    const groupOrders = new Map([[makeFQID('stateful-group', 'scope'), 42]]);
+    const featureStates = {[String(feature.id)]: {grp: 'stateful-group'}};
+
+    const priority = placeAndCapturePriority(bucket, groupOrders, 7, true, featureStates);
+
+    expect(priority.placementSubgroupOrder).toEqual(42);
+});
+
+test('SymbolBucket#addToPlacement evaluates a feature-state-driven placement-priority per feature', () => {
+    const bucket = bucketSetupWithPlacementProps(['feature-state', 'prio'], undefined);
+    const featureStates = {[String(feature.id)]: {prio: 9}};
+
+    const priority = placeAndCapturePriority(bucket, new Map(), 7, true, featureStates);
+
+    expect(priority.symbolPlacementPriority).toEqual(9);
+});
+
+test('SymbolBucket#addToPlacement resolves feature state by the promoted id when promoteId is configured', () => {
+    const bucket = bucketSetupWithPlacementProps(['feature-state', 'prio'], undefined);
+    // `osm_id` on the fixture feature (-1517267225) differs from its raw vector-tile `feature.id`
+    // (18446744072192285000); feature state must be looked up under the promoted value.
+    const featureStates = {[String(feature.properties.osm_id)]: {prio: 9}};
+
+    const priority = placeAndCapturePriority(bucket, new Map(), 7, true, featureStates, 'osm_id');
+
+    expect(priority.symbolPlacementPriority).toEqual(9);
+});
+
+test('SymbolBucket#addToPlacement ignores feature state keyed by the raw vector-tile id when promoteId is configured', () => {
+    const bucket = bucketSetupWithPlacementProps(['feature-state', 'prio'], undefined);
+    // Keyed by the raw `feature.id` rather than the promoted `osm_id` -- must not match, proving
+    // the lookup uses the promoted id (via FeatureIndex#getId) and not `feature.id` directly.
+    const featureStates = {[String(feature.id)]: {prio: 9}};
+
+    const priority = placeAndCapturePriority(bucket, new Map(), 7, true, featureStates, 'osm_id');
+
+    expect(priority.symbolPlacementPriority).toEqual(0);
+});
+
+test('SymbolBucket#addToPlacement falls back to the implicit group when no feature state is set for the feature', () => {
+    const bucket = bucketSetupWithPlacementProps(undefined, ['coalesce', ['feature-state', 'grp'], 'group-a']);
+    const groupOrders = new Map([[makeFQID('group-a', 'scope'), 11], [makeFQID('stateful-group', 'scope'), 42]]);
+
+    const priority = placeAndCapturePriority(bucket, groupOrders, 7, true, {});
+
+    expect(priority.placementSubgroupOrder).toEqual(11);
+});
+
+test('SymbolBucket#addToPlacement falls back to the implicit group when a data-driven placement-group has no feature', () => {
+    const bucket = bucketSetupWithPlacementProps(undefined, ['get', 'type']);
+    const groupOrders = new Map([[makeFQID('city', 'scope'), 42]]);
+
+    const priority = placeAndCapturePriority(bucket, groupOrders, 7, false);
+
+    expect(priority.placementSubgroupOrder).toEqual(subgroupOrderForLayerPosition(7));
+});
+
+test('SymbolBucket#resetPlacementVisibility is a no-op before the bucket has ever been fed to new placement', () => {
+    const bucket = bucketSetup();
+    const options = {iconDependencies: {}, glyphDependencies: {}};
+    const projection = getProjection({name: 'mercator'});
+
+    bucket.populate([{feature}], options);
+    const bucketData = performSymbolLayout(bucket, stacks, glyphPositions, null, null, null, null, null, null, projection);
+    postRasterizationSymbolLayout(bucket, bucketData, null, null, null, null, projection, null, null, {});
+
+    expect(() => bucket.resetPlacementVisibility()).not.toThrow();
+    expect(bucket.text.opacityVertexArray.length).toEqual(0);
 });
 
 test('SymbolBucket integer overflow', () => {

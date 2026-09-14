@@ -21,6 +21,7 @@ import {
 import Style from '../style/style';
 import EvaluationParameters from '../style/evaluation_parameters';
 import Painter from '../render/painter';
+import {Lite} from '../../modules/lite_main';
 import Transform from '../geo/transform';
 import Hash from './hash';
 import HandlerManager from './handler_manager';
@@ -34,7 +35,6 @@ import {RGBAImage} from '../util/image';
 import {Event, ErrorEvent} from '../util/evented';
 import {MapMouseEvent} from './events';
 import TaskQueue from '../util/task_queue';
-import webpSupported from '../util/webp_supported';
 import {PerformanceUtils, PerformanceMarkers} from '../util/performance';
 import {LivePerformanceMarkers, LivePerformanceUtils} from '../util/live_performance';
 import EasedVariable from '../util/eased_variable';
@@ -49,7 +49,9 @@ import {DevTools} from './control/devtools';
 import {InteractionSet} from './interactions';
 import {ImageId} from '../style-spec/expression/types/image_id';
 
+import type {EmissiveColorPrecision} from '../render/painter';
 import type Marker from '../ui/marker';
+import type {AnimationFrameProvider} from './animation_frame_provider';
 import type Popup from '../ui/popup';
 import type SourceCache from '../source/source_cache';
 import type {MapEventType, MapEventOf} from './events';
@@ -59,7 +61,7 @@ import type {AJAXError, RequestTransformFunction} from '../util/ajax';
 import type {LngLatLike, LngLatBoundsLike} from '../geo/lng_lat';
 import type {CustomLayerInterface} from '../style/style_layer/custom_style_layer';
 import type {StyleImageInterface, StyleImageMetadata} from '../style/style_image';
-import type {StyleOptions, StyleSetterOptions, AnyLayer, FeatureSelector, SourceSelector, QueryRenderedFeaturesParams, QueryRenderedFeaturesetParams, LayerProperty} from '../style/style';
+import type {StyleOptions, StyleSetterOptions, AnyLayer, FeatureSelector, SourceSelector, QueryRenderedFeaturesParams, QueryRenderedFeaturesetParams, LayerProperty, PlacementAlgorithmName} from '../style/style';
 import type {FontstackCompositing} from '../style/glyph_loader';
 import type ScrollZoomHandler from './handler/scroll_zoom';
 import type {ScrollZoomHandlerOptions} from './handler/scroll_zoom';
@@ -96,7 +98,7 @@ import type {
     ColorThemeSpecification,
     TerrainSpecificationUpdate,
 } from '../style-spec/types';
-import type {Source, SourceClass} from '../source/source';
+import type {Source} from '../source/source';
 import type {EasingOptions} from './camera';
 import type {ContextOptions} from '../gl/context';
 import type {GeoJSONFeature, FeaturesetDescriptor, TargetFeature, TargetDescriptor} from '../util/vectortile_to_geojson';
@@ -108,7 +110,6 @@ import type {CustomSourceInterface} from '../source/custom_source';
 import type {CanvasSourceSpecification} from '../source/canvas_source';
 import type {RasterQueryParameters, RasterQueryResult} from '../source/raster_array_tile_source';
 import type {IndoorTileOptions} from '../style/indoor_data';
-import type {PlacementAlgorithmName} from '../symbol/placement_algorithms';
 
 export type ControlPosition = 'top-left' | 'top' | 'top-right' | 'right' | 'bottom-right' | 'bottom' | 'bottom-left' | 'left';
 
@@ -220,6 +221,8 @@ export type MapOptions = {
     tessellationStep?: number;
     scaleFactor?: number;
     pitchRotateKey?: PitchRotateKey;
+    animationFrameProvider?: AnimationFrameProvider;
+    emissiveColorPrecision?: EmissiveColorPrecision;
 };
 
 const CSS_MATRIX_RE = /matrix.*\((.+)\)/;
@@ -282,6 +285,7 @@ const defaultOptions = {
     testMode: false,
     precompilePrograms: true,
     scaleFactor: 1.0,
+    emissiveColorPrecision: 'approximate'
 } satisfies Omit<MapOptions, 'container'>;
 
 /**
@@ -415,6 +419,12 @@ const defaultOptions = {
  * for high-density displays. The scale factor is clamped per-layer by `text-size-scale-range`
  * and `icon-size-scale-range` style properties.
  * This option is experimental and may change in future releases.
+ * @param {'approximate' | 'exact'} [options.emissiveColorPrecision='approximate'] Controls how precisely emissive color is preserved when compositing draped layers (e.g. Raster, hillshade, background) over terrain or globe.
+ * When `'approximate'` (the default), emissive color is approximated during compositing.
+ * When `'exact'`, emissive color is fully preserved. This has a performance impact due to higher texture memory usage (4 channels instead of 1).
+ * This option is experimental and may change in future releases.
+ * @param {PlacementAlgorithmName} [options.placementAlgorithm='default'] Selects the symbol placement pipeline. `'global'` uses the new whole-frame placement pipeline instead of the legacy per-tile one.
+ * The `'global'` value is experimental, incomplete, and may change in future releases.
  * @param {ProjectionSpecification} [options.projection='mercator'] The [projection](https://docs.mapbox.com/mapbox-gl-js/style-spec/projection/) the map should be rendered in.
  * Supported projections are:
  * * [Albers](https://en.wikipedia.org/wiki/Albers_projection) equal-area conic projection as `albers`
@@ -426,6 +436,7 @@ const defaultOptions = {
  * * [Natural Earth](https://en.wikipedia.org/wiki/Natural_Earth_projection) pseudocylindrical map projection as `naturalEarth`
  * * [Winkel Tripel](https://en.wikipedia.org/wiki/Winkel_tripel_projection) azimuthal map projection as `winkelTripel`
  * Conic projections such as Albers and Lambert have configurable `center` and `parallels` properties that allow developers to define the region in which the projection has minimal distortion; see the example for how to configure these properties.
+ * @param {AnimationFrameProvider} [options.animationFrameProvider=null] If set, the map schedules repaints through this provider instead of `window.requestAnimationFrame`.
  * @example
  * const map = new mapboxgl.Map({
  *     container: 'map', // container ID
@@ -462,10 +473,10 @@ export class Map extends Camera {
     style?: Style;
     painter: Painter;
     _container: HTMLElement;
-    _missingCSSCanary: HTMLElement;
-    _canvasContainer: HTMLElement;
-    _controlContainer: HTMLElement;
-    _controlPositions: {
+    _missingCSSCanary!: HTMLElement;
+    _canvasContainer!: HTMLElement;
+    _controlContainer!: HTMLElement;
+    _controlPositions!: {
         [p in ControlPosition]?: HTMLElement;
     };
     _interactive?: boolean;
@@ -480,26 +491,27 @@ export class Map extends Camera {
     _showCollisionBoxes?: boolean;
     _showPadding?: boolean;
     _showTileAABBs?: boolean;
-    _showOverdrawInspector: boolean;
+    _showOverdrawInspector!: boolean;
     _repaint?: boolean;
     _vertices?: boolean;
-    _canvas: HTMLCanvasElement;
+    _canvas!: HTMLCanvasElement;
     _minTileCacheSize?: number;
     _maxTileCacheSize?: number;
+    _animationFrameProvider?: AnimationFrameProvider;
     _frame?: Cancelable;
     _renderNextFrame?: boolean;
     _styleDirty?: boolean;
     _sourcesDirty?: boolean;
     _placementDirty?: boolean;
-    _loaded: boolean;
-    _fullyLoaded: boolean; // accounts for placement finishing as well
+    _loaded!: boolean;
+    _fullyLoaded!: boolean; // accounts for placement finishing as well
     _trackResize: boolean;
     _preserveDrawingBuffer: boolean;
     _failIfMajorPerformanceCaveat: boolean;
     _antialias: boolean;
     _refreshExpiredTiles: boolean;
-    _hash: Hash;
-    _delegatedListeners: {[type: string]: DelegatedListener[]};
+    _hash!: Hash;
+    _delegatedListeners!: {[type: string]: DelegatedListener[]};
     _fullscreenchangeEvent: 'fullscreenchange' | 'webkitfullscreenchange';
     _isInitialLoad: boolean;
     _shouldCheckAccess: boolean;
@@ -520,8 +532,8 @@ export class Map extends Camera {
     _fontstackCompositing: FontstackCompositing;
     _requestManager: RequestManager;
     _locale: Partial<typeof defaultLocale>;
-    _removed: boolean;
-    _speedIndexTiming: boolean;
+    _removed!: boolean;
+    _speedIndexTiming!: boolean;
     _clickTolerance: number;
     _cooperativeGestures: boolean;
     _silenceAuthErrors: boolean;
@@ -550,50 +562,50 @@ export class Map extends Camera {
      * The map's {@link ScrollZoomHandler}, which implements zooming in and out with a scroll wheel or trackpad.
      * Find more details and examples using `scrollZoom` in the {@link ScrollZoomHandler} section.
      */
-    scrollZoom: ScrollZoomHandler;
+    scrollZoom!: ScrollZoomHandler;
 
     /**
      * The map's {@link BoxZoomHandler}, which implements zooming using a drag gesture with the Shift key pressed.
      * Find more details and examples using `boxZoom` in the {@link BoxZoomHandler} section.
      */
-    boxZoom: BoxZoomHandler;
+    boxZoom!: BoxZoomHandler;
 
     /**
      * The map's {@link DragRotateHandler}, which implements rotating the map while dragging with the right
      * mouse button or with the Control key pressed. Find more details and examples using `dragRotate`
      * in the {@link DragRotateHandler} section.
      */
-    dragRotate: DragRotateHandler;
+    dragRotate!: DragRotateHandler;
 
     /**
      * The map's {@link DragPanHandler}, which implements dragging the map with a mouse or touch gesture.
      * Find more details and examples using `dragPan` in the {@link DragPanHandler} section.
      */
-    dragPan: DragPanHandler;
+    dragPan!: DragPanHandler;
 
     /**
      * The map's {@link KeyboardHandler}, which allows the user to zoom, rotate, and pan the map using keyboard
      * shortcuts. Find more details and examples using `keyboard` in the {@link KeyboardHandler} section.
      */
-    keyboard: KeyboardHandler;
+    keyboard!: KeyboardHandler;
 
     /**
      * The map's {@link DoubleClickZoomHandler}, which allows the user to zoom by double clicking.
      * Find more details and examples using `doubleClickZoom` in the {@link DoubleClickZoomHandler} section.
      */
-    doubleClickZoom: DoubleClickZoomHandler;
+    doubleClickZoom!: DoubleClickZoomHandler;
 
     /**
      * The map's {@link TouchZoomRotateHandler}, which allows the user to zoom or rotate the map with touch gestures.
      * Find more details and examples using `touchZoomRotate` in the {@link TouchZoomRotateHandler} section.
      */
-    touchZoomRotate: TouchZoomRotateHandler;
+    touchZoomRotate!: TouchZoomRotateHandler;
 
     /**
      * The map's {@link TouchPitchHandler}, which allows the user to pitch the map with touch gestures.
      * Find more details and examples using `touchPitch` in the {@link TouchPitchHandler} section.
      */
-    touchPitch: TouchPitchHandler;
+    touchPitch!: TouchPitchHandler;
 
     _contextCreateOptions: ContextOptions;
 
@@ -601,6 +613,8 @@ export class Map extends Camera {
     _frameId: number;
 
     _spriteFormat: SpriteFormat;
+
+    _emissiveColorPrecision: EmissiveColorPrecision;
 
     constructor(options: MapOptions) {
         LivePerformanceUtils.mark(LivePerformanceMarkers.create);
@@ -627,6 +641,8 @@ export class Map extends Camera {
 
         const transform = new Transform(options.minZoom, options.maxZoom, options.minPitch, options.maxPitch, options.renderWorldCopies, null, null);
         super(transform, options);
+
+        this._animationFrameProvider = options.animationFrameProvider;
 
         this._repaint = !!options.repaint;
         this._interactive = options.interactive;
@@ -671,6 +687,7 @@ export class Map extends Camera {
         this._useExplicitProjection = false; // Fallback to stylesheet by default
 
         this._frameId = 0;
+        this._emissiveColorPrecision = options.emissiveColorPrecision;
 
         this._scaleFactor = options.scaleFactor;
 
@@ -1070,7 +1087,7 @@ export class Map extends Camera {
      */
     setMinZoom(minZoom?: number | null): this {
 
-        minZoom = minZoom === null || minZoom === undefined ? defaultMinZoom : minZoom;
+        minZoom = minZoom ?? defaultMinZoom;
 
         if (minZoom >= defaultMinZoom && minZoom <= this.transform.maxZoom) {
             this.transform.minZoom = minZoom;
@@ -1111,7 +1128,7 @@ export class Map extends Camera {
      */
     setMaxZoom(maxZoom?: number | null): this {
 
-        maxZoom = maxZoom === null || maxZoom === undefined ? defaultMaxZoom : maxZoom;
+        maxZoom = maxZoom ?? defaultMaxZoom;
 
         if (maxZoom >= this.transform.minZoom) {
             this.transform.maxZoom = maxZoom;
@@ -1151,7 +1168,7 @@ export class Map extends Camera {
      */
     setMinPitch(minPitch?: number | null): this {
 
-        minPitch = minPitch === null || minPitch === undefined ? defaultMinPitch : minPitch;
+        minPitch = minPitch ?? defaultMinPitch;
 
         if (minPitch < defaultMinPitch) {
             throw new Error(`minPitch must be greater than or equal to ${defaultMinPitch}`);
@@ -1196,7 +1213,7 @@ export class Map extends Camera {
      */
     setMaxPitch(maxPitch?: number | null): this {
 
-        maxPitch = maxPitch === null || maxPitch === undefined ? defaultMaxPitch : maxPitch;
+        maxPitch = maxPitch ?? defaultMaxPitch;
 
         if (maxPitch > defaultMaxPitch) {
             throw new Error(`maxPitch must be less than or equal to ${defaultMaxPitch}`);
@@ -2581,19 +2598,6 @@ export class Map extends Camera {
      */
     areTilesLoaded(): boolean {
         return this.style.areTilesLoaded();
-    }
-
-    /**
-     * Adds a [custom source type](#Custom Sources), making it available for use with
-     * {@link Map#addSource}.
-     * @private
-     * @param {string} name The name of the source type; source definition objects use this name in the `{type: ...}` field.
-     * @param {Function} SourceType A {@link Source} constructor.
-     * @param {Function} callback Called when the source type is ready or with an error argument if there is an error.
-     */
-    addSourceType(name: string, SourceType: SourceClass, callback: Callback<void>) {
-        this._lazyInitEmptyStyle();
-        this.style.addSourceType(name, SourceType, callback);
     }
 
     /**
@@ -4371,7 +4375,7 @@ export class Map extends Camera {
 
         storeAuthState(gl, true);
 
-        this.painter = new Painter(gl, this._contextCreateOptions, this.transform, this._scaleFactor, this._worldview);
+        this.painter = new Painter(gl, this._contextCreateOptions, this.transform, this._scaleFactor, this._worldview, this._emissiveColorPrecision);
         this.on('data', (event) => {
             if (event.dataType === 'source') {
                 const elevationSource = this.transform.elevation ? this.transform.elevation._source() : null;
@@ -4395,8 +4399,6 @@ export class Map extends Camera {
                 this.painter.setTileLoadedFlag(true);
             }
         });
-
-        webpSupported.testSupport(gl);
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -4596,7 +4598,9 @@ export class Map extends Camera {
                 now,
                 fadeDuration,
                 pitch,
-                transition: this.style.transition,
+                // Snap transitions before `load` so initial light transitions don't spin repaints;
+                // after `load`, user-triggered transitions must animate normally.
+                transition: this._loaded ? this.style.transition : {duration: 0, delay: 0},
                 worldview: this._worldview
             });
 
@@ -4631,8 +4635,8 @@ export class Map extends Camera {
             this._placementDirty = this.style._updatePlacement(this.painter.transform, this.showCollisionBoxes, fadeDuration, this._crossSourceCollisions, this.painter.replacementSource, this._placementAlgorithm);
         }
 
-        // Actually draw
-        if (this.style) {
+        // Actually draw - unless we're waiting on draping to load
+        if (this.style && !(this.transform.projection.requiresDraping && !Lite.loaded)) {
             this.painter.render(this.style, {
                 showTileBoundaries: this.showTileBoundaries,
                 showParseStatus: this.showParseStatus,
@@ -4677,10 +4681,6 @@ export class Map extends Camera {
         // Background patterns are rasterized in a worker thread, while
         // it's still in progress we need to keep rendering
         if (this.style && this.style.imageManager.hasPatternsInFlight()) {
-            this._styleDirty = true;
-        }
-
-        if (this.style && (!this.style.modelManager.isLoaded())) {
             this._styleDirty = true;
         }
 
@@ -5079,7 +5079,10 @@ export class Map extends Camera {
 
     _triggerFrame(render: boolean) {
         this._renderNextFrame = this._renderNextFrame || render;
-        if (this.style && !this._frame) {
+        if (!this.style || this._frame) return;
+
+        const provider = this._animationFrameProvider;
+        if (!provider) {
             this._frame = browser.frame((paintStartTimeStamp: number) => {
                 const isRenderFrame = !!this._renderNextFrame;
                 PerformanceUtils.frame(paintStartTimeStamp, isRenderFrame);
@@ -5089,6 +5092,36 @@ export class Map extends Camera {
                     this._render(paintStartTimeStamp);
                 }
             });
+            return;
+        }
+
+        // `_frame` stays non-null while `_render` runs so a synchronous provider's
+        // re-entrant repaint can't recurse. A microtask schedules the follow-up
+        // frame after the stack unwinds. Don't fold the branch above into this
+        // one: holding `_frame` through `_render` measurably slows the default
+        // rAF loop.
+        const drainFrame = (paintStartTimeStamp: number) => {
+            const isRenderFrame = !!this._renderNextFrame;
+            PerformanceUtils.frame(paintStartTimeStamp, isRenderFrame);
+            this._renderNextFrame = null;
+            try {
+                if (isRenderFrame) this._render(paintStartTimeStamp);
+            } finally {
+                this._frame = null;
+            }
+            if (isRenderFrame && !this._removed) {
+                // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                Promise.resolve().then(() => this._triggerFrame(false));
+            }
+        };
+
+        let handle: number | null = null;
+        this._frame = {cancel: () => { if (handle !== null) provider.cancelAnimationFrame(handle); }};
+        try {
+            handle = provider.requestAnimationFrame(drainFrame);
+        } catch (e) {
+            this._frame = null;
+            throw e;
         }
     }
 

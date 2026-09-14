@@ -38,13 +38,19 @@ import custom from './draw_custom';
 import sky from './draw_sky';
 import Atmosphere from './draw_atmosphere';
 import {GlobeSharedBuffers, globeToMercatorTransition} from '../geo/projection/globe_util';
-import {Terrain, defaultTerrainUniforms} from '../terrain/terrain';
+import {defaultTerrainUniforms} from '../terrain/terrain_gpu_uniforms';
+import {
+    createTerrainRenderer,
+    onTerrainRendererAvailable,
+    type ITerrainRenderer,
+} from './terrain_plugin';
 import {Debug} from '../util/debug';
 import Tile from '../source/tile';
 import {RGBAImage} from '../util/image';
 import {LayerTypeMask} from '../../3d-style/util/conflation';
 import {ReplacementSource, ReplacementOrderLandmark, ReplacementOrderBuilding} from '../../3d-style/source/replacement_source';
 import {Standard, prepareStandard} from '../../modules/standard_main';
+import {Lite} from '../../modules/lite_main';
 import {lightsUniformValues} from '../../3d-style/render/lights';
 import {WireframeDebugCache} from './wireframe_cache';
 import {FOG_OPACITY_THRESHOLD} from '../style/fog_helpers';
@@ -73,11 +79,12 @@ import type {ContextOptions} from '../gl/context';
 import type {CutoffParams} from '../render/cutoff';
 import type {DepthRangeType, DepthMaskType, DepthFuncType} from '../gl/types';
 import type {LightOverrides, LightsUniformsType} from '../../3d-style/render/lights';
+import type {FogUniformsType} from '../render/fog';
 import type {OverscaledTileID, UnwrappedTileID} from '../source/tile_id';
 import type {ProgramName} from './program';
 import type {ProgramUniformsType, DynamicDefinesType} from './program/program_uniforms';
 import type {Source, ISource} from '../source/source';
-import type {UniformBindings} from './uniform_binding';
+import type {UniformBindings, UniformValues} from './uniform_binding';
 import type {CrossTileID, VariableOffset} from '../symbol/placement';
 import type {TypedStyleLayer, CoreStyleLayer, HDStyleLayer, StandardStyleLayer} from '../style/style_layer/typed_style_layer';
 import type {IDevTools} from '../ui/control/devtools';
@@ -85,7 +92,8 @@ import type {ShadowCullCache} from './draw_fill_extrusion';
 
 export type RenderPass = 'offscreen' | 'opaque' | 'translucent' | 'sky' | 'shadow' | 'light-beam';
 export type DepthPrePass = 'initialize' | 'reset' | 'geometry';
-export type EmissiveMode = 'constant' | 'dual-source-blending' | 'mrt-fallback';
+export type EmissiveMode = 'constant' | 'dual-source-blending' | 'mrt-fallback' | 'mrt-full-rgba';
+export type EmissiveColorPrecision = 'approximate' | 'exact';
 
 export type CanvasCopyInstances = {
     canvasCopies: WebGLTexture[];
@@ -186,7 +194,10 @@ async function setupStandard(painter?: Painter) {
     Object.assign(prepare, {
         model: Standard.prepare,
     });
-    if (painter && !painter._shadowRenderer) {
+    // The Standard module loads asynchronously (a lazy import in ESM builds), so the
+    // map may have been removed while it was still loading — bail out to avoid touching
+    // a destroyed WebGL context.
+    if (painter && !painter._destroyed && !painter._shadowRenderer) {
         const SR = (Standard as {ShadowRenderer?: new (p: Painter) => ShadowRenderer}).ShadowRenderer;
         if (SR) painter._shadowRenderer = new SR(painter);
     }
@@ -205,28 +216,28 @@ class Painter {
     numSublayers: number;
     depthEpsilon: number;
     emptyProgramConfiguration: ProgramConfiguration;
-    width: number;
-    height: number;
-    tileExtentBuffer: VertexBuffer;
-    tileExtentSegments: SegmentVector;
-    debugBuffer: VertexBuffer;
-    debugIndexBuffer: IndexBuffer;
-    debugSegments: SegmentVector;
-    viewportBuffer: VertexBuffer;
-    viewportSegments: SegmentVector;
-    quadTriangleIndexBuffer: IndexBuffer;
-    mercatorBoundsBuffer: VertexBuffer;
-    mercatorBoundsSegments: SegmentVector;
-    _tileClippingMaskIDs: Record<number, number>;
-    stencilClearMode: StencilMode;
-    style: Style;
-    options: PainterOptions;
-    imageManager: ImageManager;
-    glyphManager: GlyphManager;
-    modelManager: ModelManager;
+    width!: number;
+    height!: number;
+    tileExtentBuffer!: VertexBuffer;
+    tileExtentSegments!: SegmentVector;
+    debugBuffer!: VertexBuffer;
+    debugIndexBuffer!: IndexBuffer;
+    debugSegments!: SegmentVector;
+    viewportBuffer!: VertexBuffer;
+    viewportSegments!: SegmentVector;
+    quadTriangleIndexBuffer!: IndexBuffer;
+    mercatorBoundsBuffer!: VertexBuffer;
+    mercatorBoundsSegments!: SegmentVector;
+    _tileClippingMaskIDs!: Record<number, number>;
+    stencilClearMode!: StencilMode;
+    style!: Style;
+    options!: PainterOptions;
+    imageManager!: ImageManager;
+    glyphManager!: GlyphManager;
+    modelManager!: ModelManager;
     buildingTileBorderManager?: InstanceType<NonNullable<typeof HD.BuildingTileBorderManager>>;
-    depthRangeFor3D: DepthRangeType;
-    depthOcclusion: boolean;
+    depthRangeFor3D!: DepthRangeType;
+    depthOcclusion!: boolean;
     frcCoverageSnapshot: FrcCoverageSnapshot | null;
     elevationCoverageSnapshot: ElevationCoverageSnapshot | null;
     elevationProvidersReady: boolean | undefined;
@@ -235,30 +246,31 @@ class Painter {
     // Lazy-constructed when the HD chunk loads (HD.FrcCoverageRenderer).
     // Null when SD-HD conflation is not in use and HD hasn't been loaded.
     frcCoverageRenderer: FrcCoverageRenderer | null;
-    opaquePassCutoff: number;
+    opaquePassCutoff!: number;
     frameCounter: number;
     frameTimeDelta: number;
     lastPaintStartTimeStamp: number;
-    renderPass: RenderPass;
-    currentLayer: number;
+    renderPass!: RenderPass;
+    currentLayer!: number;
     currentStencilSource: string | null | undefined;
-    currentShadowCascade: number;
+    currentShadowCascade!: number;
     _shadowCullCache: ShadowCullCache | null;
-    nextStencilID: number;
-    id: string;
-    _showOverdrawInspector: boolean;
-    cache: Record<string, Program<UniformBindings>>;
-    symbolFadeChange: number;
+    nextStencilID!: number;
+    id!: string;
+    _showOverdrawInspector!: boolean;
+    cache!: Record<string, Program<UniformBindings>>;
+    symbolFadeChange!: number;
     gpuTimers: GPUTimers;
     deferredRenderGpuTimeQueries: WebGLQuery[];
-    emptyTexture: Texture;
-    identityMat: mat4;
-    debugOverlayTexture: Texture;
-    debugOverlayCanvas: HTMLCanvasElement;
-    _terrain: Terrain | null | undefined;
+    emptyTexture!: Texture;
+    identityMat!: mat4;
+    debugOverlayTexture!: Texture;
+    debugOverlayCanvas!: HTMLCanvasElement;
+    _terrain: ITerrainRenderer | null | undefined;
+    _terrainRendererRetryPending: boolean;
     _forceTerrainMode: boolean;
     globeSharedBuffers: GlobeSharedBuffers | null | undefined;
-    tileLoaded: boolean;
+    tileLoaded!: boolean;
     frameCopies: Array<WebGLTexture>;
     loadTimeStamps: Array<number>;
     _backgroundTiles: Record<number, Tile>;
@@ -267,17 +279,20 @@ class Painter {
     _snow?: InstanceType<NonNullable<typeof HD.Snow>>;
     replacementSource: ReplacementSource;
     conflationActive: boolean;
-    firstLightBeamLayer: number;
-    _lastOcclusionLayer: number;
+    firstLightBeamLayer!: number;
+    _lastOcclusionLayer!: number;
     layersWithOcclusionOpacity: Array<number>;
     longestCutoffRange: number;
     minCutoffZoom: number;
     renderDefaultNorthPole: boolean;
     renderDefaultSouthPole: boolean;
-    renderElevatedRasterBackface: boolean;
+    renderElevatedRasterBackface!: boolean;
     _fogVisible: boolean;
     _cachedTileFogOpacities: Record<number, [number, number]>;
     _shadowRenderer?: ShadowRenderer;
+    _lightsUniforms: UniformValues<LightsUniformsType> | null = null;
+    _fogUniforms: UniformValues<FogUniformsType> | null = null;
+    _destroyed?: boolean;
     _devtools?: IDevTools;
     _wireframeDebugCache: WireframeDebugCache;
 
@@ -321,8 +336,8 @@ class Painter {
 
     // Depth for occlusion
     // FBO+Underlying texture & empty depth texture
-    depthFBO: Framebuffer;
-    depthTexture: Texture;
+    depthFBO!: Framebuffer;
+    depthTexture!: Texture;
     emptyDepthTexture: Texture;
 
     occlusionParams: OcclusionParams;
@@ -337,8 +352,11 @@ class Painter {
     _forceEmissiveMode: boolean;
     emissiveMode: EmissiveMode;
 
-    constructor(gl: WebGL2RenderingContext, contextCreateOptions: ContextOptions, transform: Transform, scaleFactor: number, worldview: string | undefined) {
+    _forceFullRgbaEmissive: boolean = false;
+
+    constructor(gl: WebGL2RenderingContext, contextCreateOptions: ContextOptions, transform: Transform, scaleFactor: number, worldview: string | undefined, emissiveColorPrecision?: EmissiveColorPrecision) {
         this.context = new Context(gl, contextCreateOptions);
+        this._forceFullRgbaEmissive = emissiveColorPrecision === 'exact';
 
         this.transform = transform;
         this._tileTextures = {};
@@ -450,12 +468,27 @@ class Painter {
         if (!enabled && (!this._terrain || !this._terrain.enabled)) return;
 
         if (!this._terrain) {
-            this._terrain = new Terrain(this, style);
+            this._terrain = createTerrainRenderer(this, style);
+            if (!this._terrain) {
+                // Lite module not yet loaded. Register a one-time callback so that
+                // once the factory becomes available we trigger a repaint and retry.
+                if (!this._terrainRendererRetryPending) {
+                    this._terrainRendererRetryPending = true;
+                    onTerrainRendererAvailable(() => {
+                        this._terrainRendererRetryPending = false;
+                        // Use _update(false) rather than triggerRepaint() so that
+                        // _sourcesDirty is set to true, which ensures _updateTerrain()
+                        // is invoked in the next render frame.
+                        if (this.style && this.style.map) this.style.map._update(false);
+                    });
+                }
+                return;
+            }
         }
-        const terrain: Terrain = this._terrain;
-        this.transform.elevation = enabled ? terrain : null;
-        terrain.update(style, this.transform, adaptCameraAltitude);
-        if (this.transform.elevation && !terrain.enabled) {
+
+        this.transform.elevation = enabled ? this._terrain : null;
+        this._terrain.update(style, this.transform, adaptCameraAltitude);
+        if (this.transform.elevation && !this._terrain.enabled) {
             // for zoom based exaggeration change, terrain.update can disable terrain.
             this.transform.elevation = null;
         }
@@ -488,7 +521,7 @@ class Painter {
         this.transform.fogCullDistSq = fogCullDist * fogCullDist;
     }
 
-    get terrain(): Terrain | null | undefined {
+    get terrain(): ITerrainRenderer | null | undefined {
         return (this.transform._terrainEnabled() && this._terrain && this._terrain.enabled) || this._forceTerrainMode ?
             this._terrain :
             null;
@@ -500,7 +533,10 @@ class Painter {
 
     set forceTerrainMode(value: boolean) {
         if (value && !this._terrain) {
-            this._terrain = new Terrain(this, this.style);
+            this._terrain = createTerrainRenderer(this, this.style);
+            if (!this._terrain) {
+                console.warn('forceTerrainMode: Lite module not loaded yet, terrain renderer unavailable');
+            }
         }
         this._forceTerrainMode = value;
     }
@@ -749,16 +785,23 @@ class Painter {
         }
     }
 
+    // True when a real second render target carries draped layers' emissive contribution
+    // (as opposed to 'constant'/'dual-source-blending', which smuggle it through the main
+    // color target's own alpha channel and can't support the exact 'mrt-full-rgba' encoding).
+    isEmissiveMrtActive(): boolean {
+        return this.emissiveMode === 'mrt-fallback' || this.emissiveMode === 'mrt-full-rgba';
+    }
+
     colorModeForDrapableLayerRenderPass(emissiveStrengthForDrapedLayers?: number): Readonly<ColorMode> {
         const deferredDrapingEnabled = () => {
-            return this.style && this.style.enable3dLights() && this.terrain && this.terrain.renderingToTexture;
+            return this.style && this.style.enable3dLights() && (this._terrain ? this._terrain.renderingToTexture : false);
         };
 
         const gl = this.context.gl;
         if (deferredDrapingEnabled() && this.renderPass === 'translucent') {
-            if ((emissiveStrengthForDrapedLayers != null && this.emissiveMode !== 'mrt-fallback') || this.emissiveMode === 'constant') {
+            if ((emissiveStrengthForDrapedLayers != null && !this.isEmissiveMrtActive()) || this.emissiveMode === 'constant') {
                 // Color mode for constant emissive strength.
-                return new ColorMode([gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.CONSTANT_ALPHA, gl.ONE_MINUS_SRC_ALPHA], new Color(0, 0, 0, emissiveStrengthForDrapedLayers != null ? emissiveStrengthForDrapedLayers : 0.0), [true, true, true, true]);
+                return new ColorMode([gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.CONSTANT_ALPHA, gl.ONE_MINUS_SRC_ALPHA], new Color(0, 0, 0, emissiveStrengthForDrapedLayers ?? 0.0), [true, true, true, true]);
             } else if (this.emissiveMode === 'dual-source-blending') {
                 const extBlendFuncExtended = this.context.extBlendFuncExtended;
                 return new ColorMode([gl.ONE, gl.ONE_MINUS_SRC_ALPHA, extBlendFuncExtended.SRC1_ALPHA_WEBGL, gl.ONE_MINUS_SRC_ALPHA], Color.transparent, [true, true, true, true]);
@@ -855,6 +898,16 @@ class Painter {
 
         this.style = style;
         this.options = options;
+
+        // Light and fog uniforms are constant across the frame apart from the per-tile fog matrix;
+        // build them once here instead of once per tile draw in uploadCommonUniforms.
+        const {directionalLight, ambientLight} = style;
+        this._lightsUniforms = style.enable3dLights() && directionalLight && ambientLight ?
+            lightsUniformValues(directionalLight, ambientLight, style) : null;
+        const tr = this.transform;
+        this._fogUniforms = style.fog ? fogUniformValues(this, style.fog, style.fog.getOpacity(tr.pitch),
+            tr.frustumCorners.TL, tr.frustumCorners.TR, tr.frustumCorners.BR, tr.frustumCorners.BL,
+            tr.globeCenterInViewSpace, tr.globeRadius, [this.width, this.height]) : null;
 
         // Update FRC coverage polygon GPU buffers from current snapshot
         if (this.frcCoverageSnapshot && !this.frcCoverageSnapshot.empty()) {
@@ -1126,7 +1179,7 @@ class Painter {
 
         const shadowRenderer = this._shadowRenderer;
         if (shadowRenderer) {
-            shadowRenderer.updateShadowParameters(this.transform, this.style.directionalLight);
+            shadowRenderer.updateShadowParameters(this.transform, this.style.directionalLight, coordsShadowCasters);
 
             for (const id in sourceCaches) {
                 for (const coord of coordsAscending[id]) {
@@ -1604,7 +1657,7 @@ class Painter {
         const startTime = PerformanceUtils.now();
         this.gpuTimingStart(layer);
         if ((!painter.transform.projection.unsupportedLayers || !painter.transform.projection.unsupportedLayers.includes(layer.type) ||
-            (painter.terrain && layer.type === 'custom')) && layer.type !== 'clip' && layer.type !== 'slot' && draw[layer.type]) {
+            (painter.terrain && layer.type === 'custom')) && layer.type !== 'clip' && layer.type !== 'slot' && layer.type !== 'placement-group' && draw[layer.type]) {
             draw[layer.type](painter, sourceCache, layer, coords, this.style.placement.variableOffsets, this.options.isInitialLoad);
         }
         if (!draw[layer.type]) {
@@ -1781,7 +1834,7 @@ class Painter {
      * @private
      */
     currentGlobalDefines(name: string, overrideFog?: boolean | null, overrideRtt?: boolean | null, overrideTerrain?: boolean | null, overrideGlobe?: boolean | null): DynamicDefinesType[] {
-        const rtt = (overrideRtt === undefined) ? this.terrain && this.terrain.renderingToTexture : overrideRtt;
+        const rtt = (overrideRtt === undefined) ? (this._terrain ? this._terrain.renderingToTexture : false) : overrideRtt;
         const terrainElevated = (overrideTerrain === undefined) ? this.terrainRenderModeElevated() : overrideTerrain;
         const globe = (overrideGlobe === undefined) ? this.transform.projection.name === 'globe' : overrideGlobe;
         const defines: DynamicDefinesType[] = [];
@@ -1792,6 +1845,7 @@ class Painter {
             if (name === 'globeRaster' || name === 'terrainRaster') {
                 defines.push('LIGHTING_3D_MODE');
                 defines.push('LIGHTING_3D_ALPHA_EMISSIVENESS');
+                if (this.emissiveMode === 'mrt-full-rgba') defines.push('USE_MRT1_RGBA');
             } else {
                 if (!rtt) {
                     defines.push('LIGHTING_3D_MODE');
@@ -1841,7 +1895,8 @@ class Painter {
     getShaderSource(name: ProgramName) {
         const hdShaders = HD.shaders;
         const standardShaders = Standard.shaders;
-        return shaders[name as keyof typeof shaders] || (hdShaders && hdShaders[name as keyof typeof hdShaders]) || (standardShaders && standardShaders[name as keyof typeof standardShaders]);
+        const liteShaders = Lite.shaders;
+        return shaders[name as keyof typeof shaders] || (hdShaders && hdShaders[name as keyof typeof hdShaders]) || (standardShaders && standardShaders[name as keyof typeof standardShaders]) || (liteShaders && liteShaders[name as keyof typeof liteShaders]);
     }
 
     /*
@@ -1911,6 +1966,8 @@ class Painter {
         if (this.emptyDepthTexture) {
             this.emptyDepthTexture.destroy();
         }
+
+        this._destroyed = true;
     }
 
     prepareDrawTile() {
@@ -1920,15 +1977,10 @@ class Painter {
     }
 
     uploadCommonLightUniforms(context: Context, program: Program<LightsUniformsType>, lightOverrides?: LightOverrides) {
-        if (this.style.enable3dLights()) {
-            const directionalLight = this.style.directionalLight;
-            const ambientLight = this.style.ambientLight;
-
-            if (directionalLight && ambientLight) {
-                const lightsUniforms = lightsUniformValues(directionalLight, ambientLight, this.style, lightOverrides);
-                program.setLightsUniformValues(context, lightsUniforms);
-            }
-        }
+        const values = lightOverrides && this._lightsUniforms ?
+            lightsUniformValues(this.style.directionalLight, this.style.ambientLight, this.style, lightOverrides) :
+            this._lightsUniforms;
+        if (values) program.setLightsUniformValues(context, values);
     }
 
     uploadCommonUniforms(context: Context, program: Program<ProgramUniformsType[ProgramName]>, tileID?: UnwrappedTileID | null, fogMatrix?: mat4 | null, cutoffParams?: CutoffParams | null, lightOverrides?: LightOverrides) {
@@ -1940,24 +1992,9 @@ class Painter {
             return;
         }
 
-        const fog = this.style.fog;
-
-        if (fog) {
-            const fogOpacity = fog.getOpacity(this.transform.pitch);
-            const fogUniforms = fogUniformValues(
-                this, fog, tileID, fogOpacity,
-                this.transform.frustumCorners.TL,
-                this.transform.frustumCorners.TR,
-                this.transform.frustumCorners.BR,
-                this.transform.frustumCorners.BL,
-                this.transform.globeCenterInViewSpace,
-                this.transform.globeRadius,
-                [
-                    this.transform.width * browser.devicePixelRatio,
-                    this.transform.height * browser.devicePixelRatio
-                ],
-                fogMatrix);
-
+        const fogUniforms = this._fogUniforms;
+        if (fogUniforms) {
+            fogUniforms['u_fog_matrix'] = tileID ? this.transform.calculateFogTileMatrix(tileID) : fogMatrix ? fogMatrix : this.identityMat;
             program.setFogUniformValues(context, fogUniforms);
         }
 
@@ -2110,7 +2147,9 @@ class Painter {
 
         const hasDataDriven = this.style.hasDataDrivenEmissiveStrength();
 
-        if (!hasDataDriven) {
+        if (this._forceFullRgbaEmissive) {
+            this.emissiveMode = 'mrt-full-rgba';
+        }  else if (!hasDataDriven) {
             this.emissiveMode = 'constant';
         } else if (this.context.extBlendFuncExtended) {
             this.emissiveMode = 'dual-source-blending';

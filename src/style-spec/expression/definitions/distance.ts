@@ -1,9 +1,11 @@
 import {isValue} from '../values';
-import {NumberType} from '../types';
+import {NumberType, ValueType} from '../types';
 import {classifyRings, updateBBox, boxWithinBox, pointWithinPolygon, segmentIntersectSegment} from '../../util/geometry_util';
 import {lngFromMercatorX, latFromMercatorY} from '../../util/mercator';
 import TinyQueue from "tinyqueue";
 import EXTENT from '../../data/extent';
+import Literal from './literal';
+import {isGlobalPropertyConstant, isStateConstant} from '../is_constant';
 
 // Geodesic scale factors (cheap-ruler math): meters per degree lon/lat at a given latitude.
 // Only the three distance operations used in this file are implemented.
@@ -56,21 +58,21 @@ function rulerPointToSegmentDistance(p: [number, number], a: [number, number], b
 
 function rulerPointOnLine(line: Array<[number, number]>, p: [number, number], kx: number, ky: number): [number, number] {
     let minDist = Infinity;
-    let minX = line[0][0];
-    let minY = line[0][1];
+    let minX = line[0]![0];
+    let minY = line[0]![1];
 
     for (let i = 0; i < line.length - 1; i++) {
-        let x = line[i][0];
-        let y = line[i][1];
-        let dx = wrapLng(line[i + 1][0] - x) * kx;
-        let dy = (line[i + 1][1] - y) * ky;
+        let x = line[i]![0];
+        let y = line[i]![1];
+        let dx = wrapLng(line[i + 1]![0] - x) * kx;
+        let dy = (line[i + 1]![1] - y) * ky;
         let t = 0;
 
         if (dx !== 0 || dy !== 0) {
             t = (wrapLng(p[0] - x) * kx * dx + (p[1] - y) * ky * dy) / (dx * dx + dy * dy);
             if (t > 1) {
-                x = line[i + 1][0];
-                y = line[i + 1][1];
+                x = line[i + 1]![0];
+                y = line[i + 1]![1];
             } else if (t > 0) {
                 x += (dx / kx) * t;
                 y += (dy / ky) * t;
@@ -142,7 +144,7 @@ function isRangeSafe(range: IndexRange, threshold: number) {
 // Split the point set(points or linestring) into two halves, using IndexRange to do in-place splitting.
 // If geometry is a line, the last point(here is the second index) of range1 needs to be included as the first point(here is the first index) of range2.
 // If geometry are points, just split the points equally(if possible) into two new point sets(here are two index ranges).
-function splitRange(range: IndexRange, isLine: boolean) {
+function splitRange(range: IndexRange, isLine: boolean): [IndexRange | null, IndexRange | null] {
     if (range[0] > range[1]) return [null, null];
     const size = getRangeSize(range);
     if (isLine) {
@@ -168,7 +170,7 @@ function getBBox(pointSets: Array<[number, number]>, range: IndexRange) {
     const bbox: BBox = [Infinity, Infinity, -Infinity, -Infinity];
     if (!isRangeSafe(range, pointSets.length)) return bbox;
     for (let i = range[0]; i <= range[1]; ++i) {
-        updateBBox(bbox, pointSets[i]);
+        updateBBox(bbox, pointSets[i]!);
     }
     return bbox;
 }
@@ -176,8 +178,8 @@ function getBBox(pointSets: Array<[number, number]>, range: IndexRange) {
 function getPolygonBBox(polygon: Array<Array<[number, number]>>) {
     const bbox: BBox = [Infinity, Infinity, -Infinity, -Infinity];
     for (let i = 0; i < polygon.length; ++i) {
-        for (let j = 0; j < polygon[i].length; ++j) {
-            updateBBox(bbox, polygon[i][j]);
+        for (let j = 0; j < polygon[i]!.length; ++j) {
+            updateBBox(bbox, polygon[i]![j]!);
         }
     }
     return bbox;
@@ -221,7 +223,7 @@ export function getLngLatPoint(coord: Point, canonical: CanonicalTileID, extent:
 function getLngLatPoints(coordinates: Array<Point>, canonical: CanonicalTileID): Array<[number, number]> {
     const coords: Array<[number, number]> = [];
     for (let i = 0; i < coordinates.length; ++i) {
-        coords.push(getLngLatPoint(coordinates[i], canonical));
+        coords.push(getLngLatPoint(coordinates[i]!, canonical));
     }
     return coords;
 }
@@ -235,7 +237,7 @@ function pointsToLineDistance(points: Array<[number, number]>, rangeA: IndexRang
     const subLine = line.slice(rangeB[0], rangeB[1] + 1);
     let dist = Infinity;
     for (let i = rangeA[0]; i <= rangeA[1]; ++i) {
-        if ((dist = Math.min(dist, pointToLineDistance(points[i], subLine, kx, ky))) === 0.0) return 0.0;
+        if ((dist = Math.min(dist, pointToLineDistance(points[i]!, subLine, kx, ky))) === 0.0) return 0.0;
     }
     return dist;
 }
@@ -261,8 +263,8 @@ function lineToLineDistance(line1: Array<[number, number]>, range1: IndexRange, 
     let dist = Infinity;
     for (let i = range1[0]; i < range1[1]; ++i) {
         for (let j = range2[0]; j < range2[1]; ++j) {
-            if (segmentIntersectSegment(line1[i], line1[i + 1], line2[j], line2[j + 1])) return 0.0;
-            dist = Math.min(dist, segmentToSegmentDistance(line1[i], line1[i + 1], line2[j], line2[j + 1], kx, ky));
+            if (segmentIntersectSegment(line1[i]!, line1[i + 1]!, line2[j]!, line2[j + 1]!)) return 0.0;
+            dist = Math.min(dist, segmentToSegmentDistance(line1[i]!, line1[i + 1]!, line2[j]!, line2[j + 1]!, kx, ky));
         }
     }
     return dist;
@@ -275,7 +277,7 @@ function pointsToPointsDistance(pointSet1: Array<[number, number]>, range1: Inde
     let dist = Infinity;
     for (let i = range1[0]; i <= range1[1]; ++i) {
         for (let j = range2[0]; j <= range2[1]; ++j) {
-            if ((dist = Math.min(dist, rulerDistance(pointSet1[i], pointSet2[j], kx, ky))) === 0.0) return dist;
+            if ((dist = Math.min(dist, rulerDistance(pointSet1[i]!, pointSet2[j]!, kx, ky))) === 0.0) return dist;
         }
     }
     return dist;
@@ -291,7 +293,7 @@ function pointToPolygonDistance(point: [number, number], polygon: Array<Array<[n
             return NaN;
         }
         if (ring[0] !== ring[ringLen - 1]) {
-            if ((dist = Math.min(dist, rulerPointToSegmentDistance(point, ring[ringLen - 1], ring[0], kx, ky))) === 0.0) return dist;
+            if ((dist = Math.min(dist, rulerPointToSegmentDistance(point, ring[ringLen - 1]!, ring[0]!, kx, ky))) === 0.0) return dist;
         }
         if ((dist = Math.min(dist, pointToLineDistance(point, ring, kx, ky))) === 0.0) return dist;
     }
@@ -303,14 +305,14 @@ function lineToPolygonDistance(line: Array<[number, number]>, range: IndexRange,
         return NaN;
     }
     for (let i = range[0]; i <= range[1]; ++i) {
-        if (pointWithinPolygon(line[i], polygon, true /*trueOnBoundary*/)) return 0.0;
+        if (pointWithinPolygon(line[i]!, polygon, true /*trueOnBoundary*/)) return 0.0;
     }
     let dist = Infinity;
     for (let i = range[0]; i < range[1]; ++i) {
         for (const ring of polygon) {
             for (let j = 0, len = ring.length, k = len - 1; j < len; k = j++) {
-                if (segmentIntersectSegment(line[i], line[i + 1], ring[k], ring[j])) return 0.0;
-                dist = Math.min(dist, segmentToSegmentDistance(line[i], line[i + 1], ring[k], ring[j], kx, ky));
+                if (segmentIntersectSegment(line[i]!, line[i + 1]!, ring[k]!, ring[j]!)) return 0.0;
+                dist = Math.min(dist, segmentToSegmentDistance(line[i]!, line[i + 1]!, ring[k]!, ring[j]!, kx, ky));
             }
         }
     }
@@ -320,7 +322,7 @@ function lineToPolygonDistance(line: Array<[number, number]>, range: IndexRange,
 function polygonIntersect(polygon1: Array<Array<[number, number]>>, polygon2: Array<Array<[number, number]>>) {
     for (const ring of polygon1) {
         for (let i = 0; i <= ring.length - 1; ++i) {
-            if (pointWithinPolygon(ring[i], polygon2, true /*trueOnBoundary*/)) return true;
+            if (pointWithinPolygon(ring[i]!, polygon2, true /*trueOnBoundary*/)) return true;
         }
     }
     return false;
@@ -342,8 +344,8 @@ function polygonToPolygonDistance(polygon1: Array<Array<[number, number]>>, poly
         for (let i = 0, len1 = ring1.length, l = len1 - 1; i < len1; l = i++) {
             for (const ring2 of polygon2) {
                 for (let j = 0, len2 = ring2.length, k = len2 - 1; j < len2; k = j++) {
-                    if (segmentIntersectSegment(ring1[l], ring1[i], ring2[k], ring2[j])) return 0.0;
-                    dist = Math.min(dist, segmentToSegmentDistance(ring1[l], ring1[i], ring2[k], ring2[j], kx, ky));
+                    if (segmentIntersectSegment(ring1[l]!, ring1[i]!, ring2[k]!, ring2[j]!)) return 0.0;
+                    dist = Math.min(dist, segmentToSegmentDistance(ring1[l]!, ring1[i]!, ring2[k]!, ring2[j]!, kx, ky));
                 }
             }
         }
@@ -361,7 +363,7 @@ function updateQueue(distQueue: TinyQueue<DistPair>, miniDist: number, kx: numbe
 // Divide and conquer, the time complexity is O(n*lgn), faster than Brute force O(n*n)
 // Most of the time, use index for in-place processing.
 function pointSetToPolygonDistance(pointSets: Array<[number, number]>, isLine: boolean, polygon: Array<Array<[number, number]>>, kx: number, ky: number, currentMiniDist: number = Infinity) {
-    let miniDist = Math.min(rulerDistance(pointSets[0], polygon[0][0], kx, ky), currentMiniDist);
+    let miniDist = Math.min(rulerDistance(pointSets[0]!, polygon[0]![0]!, kx, ky), currentMiniDist);
     if (miniDist === 0.0) return miniDist;
     const initialDistPair: DistPair = {
         dist: 0,
@@ -374,7 +376,7 @@ function pointSetToPolygonDistance(pointSets: Array<[number, number]>, isLine: b
     const polyBBox = getPolygonBBox(polygon);
 
     while (distQueue.length) {
-        const distPair = distQueue.pop();
+        const distPair = distQueue.pop()!;
         if (distPair.dist >= miniDist) continue;
         const range = distPair.range1;
         // In case the set size are relatively small, we could use brute-force directly
@@ -385,7 +387,7 @@ function pointSetToPolygonDistance(pointSets: Array<[number, number]>, isLine: b
                 if ((miniDist = Math.min(miniDist, tempDist)) === 0.0) return miniDist;
             } else {
                 for (let i = range[0]; i <= range[1]; ++i) {
-                    const tempDist = pointToPolygonDistance(pointSets[i], polygon, kx, ky);
+                    const tempDist = pointToPolygonDistance(pointSets[i]!, polygon, kx, ky);
                     if ((miniDist = Math.min(miniDist, tempDist)) === 0.0) return miniDist;
                 }
             }
@@ -405,7 +407,7 @@ function pointSetToPolygonDistance(pointSets: Array<[number, number]>, isLine: b
 }
 
 function pointSetsDistance(pointSet1: Array<[number, number]>, isLine1: boolean, pointSet2: Array<[number, number]>, isLine2: boolean, kx: number, ky: number, currentMiniDist: number = Infinity) {
-    let miniDist = Math.min(currentMiniDist, rulerDistance(pointSet1[0], pointSet2[0], kx, ky));
+    let miniDist = Math.min(currentMiniDist, rulerDistance(pointSet1[0]!, pointSet2[0]!, kx, ky));
     if (miniDist === 0.0) return miniDist;
     const initialDistPair: DistPair = {
         dist: 0,
@@ -418,7 +420,7 @@ function pointSetsDistance(pointSet1: Array<[number, number]>, isLine1: boolean,
     const set2Threshold = isLine2 ? MIN_LINE_POINT_SIZE : MIN_POINT_SIZE;
 
     while (distQueue.length) {
-        const distPair = distQueue.pop();
+        const distPair = distQueue.pop()!;
         if (distPair.dist >= miniDist) continue;
         const rangeA = distPair.range1;
         const rangeB = distPair.range2;
@@ -491,7 +493,7 @@ function pointsToGeometryDistance(originGeometry: Array<Array<Point>>, canonical
             lngLatPoints.push(getLngLatPoint(point, canonical));
         }
     }
-    const [kx, ky] = lngLatScale(lngLatPoints[0][1]);
+    const [kx, ky] = lngLatScale(lngLatPoints[0]![1]);
     if (geometry.type === 'Point' || geometry.type === 'MultiPoint' || geometry.type === 'LineString') {
         return pointSetsDistance(lngLatPoints, false /*isLine*/,
             (geometry.type === 'Point' ? [geometry.coordinates] : geometry.coordinates) as Array<[number, number]>,
@@ -516,7 +518,7 @@ function linesToGeometryDistance(originGeometry: Array<Array<Point>>, canonical:
         }
         lngLatLines.push(lngLatLine);
     }
-    const [kx, ky] = lngLatScale(lngLatLines[0][0][1]);
+    const [kx, ky] = lngLatScale(lngLatLines[0]![0]![1]);
     if (geometry.type === 'Point' || geometry.type === 'MultiPoint' || geometry.type === 'LineString') {
         return pointSetToLinesDistance(
             (geometry.type === 'Point' ? [geometry.coordinates] : geometry.coordinates) as Array<[number, number]>,
@@ -525,7 +527,7 @@ function linesToGeometryDistance(originGeometry: Array<Array<Point>>, canonical:
     if (geometry.type === 'MultiLineString') {
         let dist = Infinity;
         for (let i = 0; i < geometry.coordinates.length; i++) {
-            const tempDist = pointSetToLinesDistance(geometry.coordinates[i] as Array<[number, number]>, true /*isLine*/, lngLatLines, kx, ky, dist);
+            const tempDist = pointSetToLinesDistance(geometry.coordinates[i]! as Array<[number, number]>, true /*isLine*/, lngLatLines, kx, ky, dist);
             if (isNaN(tempDist)) return tempDist;
             if ((dist = Math.min(dist, tempDist)) === 0.0) return dist;
         }
@@ -534,7 +536,7 @@ function linesToGeometryDistance(originGeometry: Array<Array<Point>>, canonical:
     if (geometry.type === 'Polygon' || geometry.type === 'MultiPolygon') {
         let dist = Infinity;
         for (let i = 0; i < lngLatLines.length; i++) {
-            const tempDist = pointSetToPolygonsDistance(lngLatLines[i], true /*isLine*/,
+            const tempDist = pointSetToPolygonsDistance(lngLatLines[i]!, true /*isLine*/,
                 (geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates) as Array<Array<Array<[number, number]>>>,
                 kx, ky, dist);
             if (isNaN(tempDist)) return tempDist;
@@ -550,11 +552,11 @@ function polygonsToGeometryDistance(originGeometry: Array<Array<Point>>, canonic
     for (const polygon of classifyRings(originGeometry, 0)) {
         const lngLatPolygon: Array<Array<[number, number]>> = [];
         for (let i = 0; i < polygon.length; ++i) {
-            lngLatPolygon.push(getLngLatPoints(polygon[i], canonical));
+            lngLatPolygon.push(getLngLatPoints(polygon[i]!, canonical));
         }
         lngLatPolygons.push(lngLatPolygon);
     }
-    const [kx, ky] = lngLatScale(lngLatPolygons[0][0][0][1]);
+    const [kx, ky] = lngLatScale(lngLatPolygons[0]![0]![0]![1]);
     if (geometry.type === 'Point' || geometry.type === 'MultiPoint' || geometry.type === 'LineString') {
         return pointSetToPolygonsDistance(
             (geometry.type === 'Point' ? [geometry.coordinates] : geometry.coordinates) as Array<[number, number]>,
@@ -563,7 +565,7 @@ function polygonsToGeometryDistance(originGeometry: Array<Array<Point>>, canonic
     if (geometry.type === 'MultiLineString') {
         let dist = Infinity;
         for (let i = 0; i < geometry.coordinates.length; i++) {
-            const tempDist = pointSetToPolygonsDistance(geometry.coordinates[i] as Array<[number, number]>, true /*isLine*/, lngLatPolygons, kx, ky, dist);
+            const tempDist = pointSetToPolygonsDistance(geometry.coordinates[i]! as Array<[number, number]>, true /*isLine*/, lngLatPolygons, kx, ky, dist);
             if (isNaN(tempDist)) return tempDist;
             if ((dist = Math.min(dist, tempDist)) === 0.0) return dist;
         }
@@ -587,70 +589,130 @@ function isTypeValid(type: string) {
         type === "MultiPolygon"
     );
 }
+
+// Resolves a GeoJSON value (Feature / FeatureCollection / bare geometry) down
+// to the geometries `distance` measures against -- one per feature for a
+// FeatureCollection, one otherwise. Shared by parse-time (literal argument)
+// and evaluate-time (e.g. a `["config", ...]` argument, whose value isn't
+// known until evaluation) resolution. Returns null if the value isn't valid
+// GeoJSON, or if any feature has a geometry type other than
+// Point/LineString/Polygon (and their Multi* variants).
+function extractDistanceGeometry(value: unknown): Array<DistanceGeometry> | null {
+    if (!isValue(value) || typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return null;
+    }
+    const geojson = value as GeoJSON.GeoJSON;
+    if (geojson.type === 'FeatureCollection') {
+        if (geojson.features.length === 0) return null;
+        const geometries: Array<DistanceGeometry> = [];
+        for (const feature of geojson.features) {
+            if (!isTypeValid(feature.geometry.type)) return null;
+            geometries.push(feature.geometry as DistanceGeometry);
+        }
+        return geometries;
+    }
+    if (geojson.type === 'Feature') {
+        return isTypeValid(geojson.geometry.type) ? [geojson.geometry as DistanceGeometry] : null;
+    }
+    if (isTypeValid(geojson.type)) {
+        return [geojson as DistanceGeometry];
+    }
+    return null;
+}
+
 class Distance implements Expression {
     type: Type;
-    geojson: GeoJSON.GeoJSON;
-    geometries: DistanceGeometry;
+    geojson: Expression;
 
-    constructor(geojson: GeoJSON.GeoJSON, geometries: DistanceGeometry) {
+    constructor(geojson: Expression) {
         this.type = NumberType;
         this.geojson = geojson;
-        this.geometries = geometries;
     }
 
     static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Distance | null | void {
         if (args.length !== 2) {
             return context.error(`'distance' expression requires either one argument, but found ' ${args.length - 1} instead.`);
         }
-        if (isValue(args[1])) {
-            const geojson = args[1] as GeoJSON.GeoJSON;
-            if (geojson.type === 'FeatureCollection') {
-                for (let i = 0; i < geojson.features.length; ++i) {
-                    if (isTypeValid(geojson.features[i].geometry.type)) {
-                        return new Distance(geojson, geojson.features[i].geometry as DistanceGeometry);
-                    }
-                }
-            } else if (geojson.type === 'Feature') {
-                if (isTypeValid(geojson.geometry.type)) {
-                    return new Distance(geojson, geojson.geometry as DistanceGeometry);
-                }
-            } else if (isTypeValid(geojson.type)) {
-                return new Distance(geojson, geojson as DistanceGeometry);
+
+        const arg = args[1];
+        // A bare GeoJSON value (Feature / FeatureCollection / bare geometry)
+        // isn't valid expression syntax on its own, so wrap it as a literal
+        // like ["literal", {...}] would be. Anything else -- e.g.
+        // `["config", "key"]` -- is left as-is and parsed as a regular
+        // sub-expression, resolved to GeoJSON at evaluation time so a config
+        // value can change at runtime without re-parsing the style.
+        const isBareGeoJSON = isValue(arg) && !Array.isArray(arg);
+        const parsed = context.parse(isBareGeoJSON ? ['literal', arg] : arg, 1, ValueType);
+        if (!parsed) return null;
+
+        for (const [globalProperties, name] of [
+            [['measure-light'], 'brightness'],
+            [['pitch'], 'pitch'],
+            [['distance-from-center'], 'distance-from-center'],
+        ] as Array<[Array<string>, string]>) {
+            if (!isGlobalPropertyConstant(parsed, globalProperties)) {
+                return context.error(`'distance' expression may not depend on ${name}.`);
             }
         }
-        return context.error(
-            "'distance' expression needs to be an array with format [\'Distance\', GeoJSONObj]."
-        );
+        if (!isStateConstant(parsed)) {
+            return context.error(`'distance' expression may not depend on feature-state.`);
+        }
+
+        // Literal arguments can be validated eagerly; a config-driven
+        // argument can't be checked until it's evaluated.
+        if (parsed instanceof Literal && !extractDistanceGeometry(parsed.value)) {
+            return context.error(
+                "'distance' expression needs to be an array with format [\'Distance\', GeoJSONObj]."
+            );
+        }
+
+        return new Distance(parsed);
     }
 
     evaluate(ctx: EvaluationContext): number | null {
+        const geometries = extractDistanceGeometry(this.geojson.evaluate(ctx));
+        if (!geometries) {
+            console.warn("Distance Expression: could not resolve a valid Point/LineString/Polygon GeoJSON geometry.");
+            return null;
+        }
+
         const geometry = ctx.geometry();
         const canonical = ctx.canonicalID();
-        if (geometry != null && canonical != null) {
-            if (ctx.geometryType() === 'Point') {
-                return pointsToGeometryDistance(geometry, canonical, this.geometries);
-            }
-            if (ctx.geometryType() === 'LineString') {
-                return linesToGeometryDistance(geometry, canonical, this.geometries);
-            }
-            if (ctx.geometryType() === 'Polygon') {
-                return polygonsToGeometryDistance(geometry, canonical, this.geometries);
-            }
-            console.warn("Distance Expression: currently only evaluates valid Point/LineString/Polygon geometries.");
-        } else {
+        if (geometry == null || canonical == null) {
             console.warn("Distance Expression: requires valid feature and canonical information.");
+            return null;
         }
-        return null;
+
+        const geometryType = ctx.geometryType();
+        const distanceTo = geometryType === 'Point' ? pointsToGeometryDistance :
+            geometryType === 'LineString' ? linesToGeometryDistance :
+            geometryType === 'Polygon' ? polygonsToGeometryDistance : null;
+        if (!distanceTo) {
+            console.warn("Distance Expression: currently only evaluates valid Point/LineString/Polygon geometries.");
+            return null;
+        }
+
+        // A FeatureCollection reference resolves to one geometry per feature;
+        // report the distance to the closest one.
+        let dist = Infinity;
+        for (const g of geometries) {
+            const tempDist = distanceTo(geometry, canonical, g);
+            if (tempDist == null || isNaN(tempDist)) return tempDist;
+            if ((dist = Math.min(dist, tempDist)) === 0) break;
+        }
+        return dist;
     }
 
-    eachChild() {}
+    eachChild(fn: (_: Expression) => void) {
+        fn(this.geojson);
+    }
 
     outputDefined(): boolean {
         return true;
     }
 
     serialize(): Array<unknown> {
-        return ['distance', this.geojson];
+        return ['distance', this.geojson.serialize()];
     }
 }
 

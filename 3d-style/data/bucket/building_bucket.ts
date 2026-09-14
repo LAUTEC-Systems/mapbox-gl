@@ -191,51 +191,51 @@ export function waitForBuildingGen(): Promise<void> {
 
 class BuildingBloomGeometry {
     layoutVertexArray = new BuildingPositionArray();
-    layoutVertexBuffer: VertexBuffer;
+    layoutVertexBuffer!: VertexBuffer;
 
     layoutAttenuationArray = new BuildingBloomAttenuationArray();
-    layoutAttenuationBuffer: VertexBuffer;
+    layoutAttenuationBuffer!: VertexBuffer;
 
     layoutColorArray = new BuildingColorArray();
-    layoutColorBuffer: VertexBuffer;
+    layoutColorBuffer!: VertexBuffer;
 
     indexArray = new TriangleIndexArray();
     indexArrayForConflation = new TriangleIndexArray();
-    indexBuffer: IndexBuffer;
+    indexBuffer!: IndexBuffer;
 
     segmentsBucket = new SegmentVector();
 }
 
 export class BuildingGeometry {
     layoutVertexArray: BuildingPositionArray;
-    layoutVertexBuffer: VertexBuffer;
+    layoutVertexBuffer!: VertexBuffer;
 
     layoutNormalArray: BuildingNormalArray;
-    layoutNormalBuffer: VertexBuffer;
+    layoutNormalBuffer!: VertexBuffer;
 
     layoutCentroidArray: BuildingCentroidArray;
-    layoutCentroidBuffer: VertexBuffer;
+    layoutCentroidBuffer!: VertexBuffer;
 
     layoutColorArray: BuildingColorArray;
-    layoutColorBuffer: VertexBuffer;
+    layoutColorBuffer!: VertexBuffer;
 
     layoutFacadePaintArray: BuildingFacadePaintArray = null;
-    layoutFacadePaintBuffer: VertexBuffer;
+    layoutFacadePaintBuffer!: VertexBuffer;
 
     layoutFacadeDataArray: BuildingFacadeDataArray = null;
-    layoutFacadeDataBuffer: VertexBuffer;
+    layoutFacadeDataBuffer!: VertexBuffer;
 
     layoutFacadeVerticalRangeArray: BuildingFacadeVerticalRangeArray = null;
-    layoutFacadeVerticalRangeBuffer: VertexBuffer;
+    layoutFacadeVerticalRangeBuffer!: VertexBuffer;
 
     layoutFloodLightDataArray: BuildingFloodLightWallRadiusArray;
-    layoutFloodLightDataBuffer: VertexBuffer;
+    layoutFloodLightDataBuffer!: VertexBuffer;
 
     layoutAOArray: StructArrayLayout1ub1;
 
     indexArray: TriangleIndexArray;
     indexArrayForConflation: TriangleIndexArray;
-    indexBuffer: IndexBuffer;
+    indexBuffer!: IndexBuffer;
 
     segmentsBucket = new SegmentVector();
 
@@ -306,20 +306,20 @@ export class BuildingBucket implements BucketWithGroundEffect {
     canonical: CanonicalTileID;
     layers: Array<BuildingStyleLayer>;
     layerIds: Array<string>;
-    stateDependentLayers: Array<BuildingStyleLayer>;
+    stateDependentLayers!: Array<BuildingStyleLayer>;
     stateDependentLayerIds: Array<string>;
 
     hasPattern: boolean;
     worldview: string;
 
     programConfigurations: ProgramConfigurationSet<BuildingStyleLayer>;
-    uploaded: boolean;
+    uploaded!: boolean;
     colorBufferUploaded = false;
 
     maxHeight: number = 0;
 
     projection: ProjectionSpecification;
-    tileToMeter: number;
+    tileToMeter!: number;
     groundEffect: GroundEffect;
     replacementUpdateTime: number = 0;
     activeReplacements: Region[] = [];
@@ -957,7 +957,8 @@ export class BuildingBucket implements BucketWithGroundEffect {
             const footprintBoundsMin = new Point(Infinity, Infinity);
             const footprintBoundsMax = new Point(-Infinity, -Infinity);
 
-            // Add ground effect data
+            // Add ground effect data if feature is not elevated
+            const useGroundEffect = (base <= 0);
             const groundEffectVertexOffset = this.groundEffect.vertexArray.length;
 
             for (const ring of result.modifiedPolygonRings) {
@@ -972,7 +973,9 @@ export class BuildingBucket implements BucketWithGroundEffect {
                     boundsMax.x = Math.max(boundsMax.x, ring[reverseIdx]);
                     boundsMax.y = Math.max(boundsMax.y, ring[reverseIdx + 1]);
                     const point = new Point(ring[reverseIdx], ring[reverseIdx + 1]);
-                    groundPolyline.push(point);
+                    if (useGroundEffect) {
+                        groundPolyline.push(point);
+                    }
 
                     footprintFlattened.push(point.x, point.y);
                     this.footprintsVertices.emplaceBack(point.x, point.y);
@@ -983,7 +986,9 @@ export class BuildingBucket implements BucketWithGroundEffect {
                 footprintBoundsMax.x = Math.max(footprintBoundsMax.x, boundsMax.x);
                 footprintBoundsMax.y = Math.max(footprintBoundsMax.y, boundsMax.y);
 
-                this.groundEffect.addData(groundPolyline, [boundsMin, boundsMax], maxRadius);
+                if (useGroundEffect) {
+                    this.groundEffect.addData(groundPolyline, [boundsMin, boundsMax], maxRadius);
+                }
             }
 
             const groundEffectVertexLength = this.groundEffect.vertexArray.length - groundEffectVertexOffset;
@@ -1007,7 +1012,7 @@ export class BuildingBucket implements BucketWithGroundEffect {
                 this.footprintsIndices.resize(this.footprintsIndices.length + indices.length);
                 this.footprintsIndices.uint16.set(indices, footprintIndexOffset);
 
-                const buildingOrFeatureId = buildingId != null ? buildingId : feature.id;
+                const buildingOrFeatureId = buildingId ?? feature.id;
                 this.buildingIds.add(buildingOrFeatureId);
                 this.footprintsMin.x = Math.min(this.footprintsMin.x, footprintBoundsMin.x);
                 this.footprintsMin.y = Math.min(this.footprintsMin.y, footprintBoundsMin.y);

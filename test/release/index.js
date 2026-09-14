@@ -144,12 +144,14 @@ const versions = {
     'latest': {}
 };
 
-for (const [version, metadata] of Object.entries(mapboxglVersions)) {
-    versions[version] = metadata;
-}
-
 // Wait for DOMContentLoaded
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    const mapboxglVersions = await fetch('https://api.mapbox.com/mapbox-gl-js/versions.json').then(res => res.json());
+
+    for (const [version, metadata] of Object.entries(mapboxglVersions)) {
+        versions[version] = metadata;
+    }
+
     const titleItem = document.querySelector('#title');
     const titleElement = document.querySelector('#title-text');
     const titleDropdown = document.querySelector('#title .dropdown');
@@ -209,7 +211,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return doc
             .replace(REGEX_PATTERNS.LOCAL_JS_SCRIPT, `<script src="${jsUrl}"></script>`)
             .replace(REGEX_PATTERNS.LOCAL_CSS_LINK, `<link rel="stylesheet" href="${cssUrl}" />`)
-            .replace(REGEX_PATTERNS.LOCAL_ESM_SCRIPT, `from './dist/esm-dev/mapbox-gl.js'`);
+            .replace(REGEX_PATTERNS.LOCAL_ESM_SCRIPT, `from './dist/esm/mapbox-gl.js'`);
     }
 
     /**

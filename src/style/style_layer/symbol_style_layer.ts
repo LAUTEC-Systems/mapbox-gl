@@ -22,6 +22,8 @@ import FormatSectionOverride from '../format_section_override';
 import FormatExpression from '../../style-spec/expression/definitions/format';
 import Literal from '../../style-spec/expression/definitions/literal';
 import ProgramConfiguration from '../../data/program_configuration';
+import EXTENT from '../../style-spec/data/extent';
+import {getSymbolPlacementTileProjectionMatrix} from '../../geo/projection/projection_util';
 
 import type {
     PropertyValue,
@@ -41,17 +43,27 @@ import type {LayerSpecification} from '../../style-spec/types';
 import type {Feature, SourceExpression, CompositeExpression} from '../../style-spec/expression/index';
 import type {Expression} from '../../style-spec/expression/expression';
 import type {CanonicalTileID} from '../../source/tile_id';
+import type Tile from '../../source/tile';
+import type {SymbolPlacementParameters} from '../../placement/symbol_placement_parameters';
 import type {LUT} from "../../util/lut";
 import type {ImageId} from '../../style-spec/expression/types/image_id';
 import type {ProgramName} from '../../render/program';
 import type SymbolAppearance from '../appearance';
 import type {AppearanceProps} from '../appearance_properties';
 import type {RuntimeModuleType} from '../style_layer';
+import type SourceCache from '../../source/source_cache';
+import type {FeatureStates} from '../../source/source_state';
 
 let properties: {
     layout: Properties<LayoutProps>;
     paint: Properties<PaintProps>;
 };
+
+const EMPTY_FEATURE_STATES: FeatureStates = {};
+
+function isStateDependent(value: PossiblyEvaluatedPropertyValue<unknown>): boolean {
+    return value.value.kind !== 'constant' && value.value.isStateDependent;
+}
 
 const getProperties = () => {
     if (properties) {
@@ -67,20 +79,20 @@ const getProperties = () => {
 };
 
 class SymbolStyleLayer extends StyleLayer {
-    override type: 'symbol';
+    override type!: 'symbol';
 
-    override _unevaluatedLayout: Layout<LayoutProps>;
-    override layout: PossiblyEvaluated<LayoutProps>;
+    override _unevaluatedLayout!: Layout<LayoutProps>;
+    override layout!: PossiblyEvaluated<LayoutProps>;
 
-    override _transitionablePaint: Transitionable<PaintProps>;
-    override _transitioningPaint: Transitioning<PaintProps>;
-    override paint: PossiblyEvaluated<PaintProps>;
+    override _transitionablePaint!: Transitionable<PaintProps>;
+    override _transitioningPaint!: Transitioning<PaintProps>;
+    override paint!: PossiblyEvaluated<PaintProps>;
 
     _colorAdjustmentMatrix: mat4;
-    _saturation: number;
-    _contrast: number;
-    _brightnessMin: number;
-    _brightnessMax: number;
+    _saturation!: number;
+    _contrast!: number;
+    _brightnessMin!: number;
+    _brightnessMax!: number;
 
     hasOcclusionOpacityProperties: boolean;
 
@@ -219,6 +231,44 @@ class SymbolStyleLayer extends StyleLayer {
 
     override createBucket(parameters: BucketParameters<this>): SymbolBucket {
         return new SymbolBucket(parameters);
+    }
+
+    override placeSymbols(parameters: SymbolPlacementParameters, tiles: Array<Tile>, styleLayerOrder: number, sourceCache: SourceCache, checkAgainstClipLayer: boolean): void {
+        const {globalPlacement, idRangeAllocator, transform, buildingIndex, fogState, groupOrders, replacementSource, mercatorCenter} = parameters;
+        const layerUid = this.runtimeLayerUID;
+
+        const statefulPlacement = isStateDependent(this.paint.get('placement-group')) ||
+            isStateDependent(this.paint.get('placement-priority'));
+        const featureStates: FeatureStates = statefulPlacement ?
+            sourceCache._state.getState(this.sourceLayer || '_geojsonTileLayer') : EMPTY_FEATURE_STATES;
+
+        for (const tile of tiles) {
+            const bucket = tile.getBucket(this) as SymbolBucket | undefined;
+            if (!bucket || this.fqid !== bucket.layerIds[0]) continue;
+
+            // Bakes road/building elevation into bucket.symbolInstances' zOffset ahead of the
+            // placement run
+            if (bucket.elevationType === 'offset' && buildingIndex) {
+                buildingIndex.updateZOffset(bucket, tile.tileID);
+            } else if (bucket.elevationType === 'road' && bucket.hdExt) {
+                bucket.hdExt.updateRoadElevation(bucket, tile.tileID.canonical);
+            }
+            bucket.updateZOffset();
+
+            globalPlacement.startSymbolSourceProcessing(bucket);
+            const bucketProjection = bucket.getProjection();
+            // The bucket may have been parsed under a different projection than the one
+            // currently active (e.g. mid globe <-> mercator transition, since buckets aren't
+            // reparsed on projection change)
+            // Create a scratch transform before computing matrices
+            const tileTransform = bucketProjection.name === transform.projection.name ? transform : transform.clone();
+            if (tileTransform !== transform) tileTransform.setProjection(bucket.projection);
+            const posMatrix = getSymbolPlacementTileProjectionMatrix(tile.tileID, bucketProjection, tileTransform, tileTransform.projection.name);
+            const invMatrix = bucketProjection.createInversionMatrix(tileTransform, tile.tileID.canonical);
+            const textPixelRatio = tile.tileSize / EXTENT;
+            bucket.addToPlacement(globalPlacement, idRangeAllocator, layerUid, posMatrix, invMatrix, mercatorCenter, tileTransform, textPixelRatio, tile, fogState, groupOrders, styleLayerOrder, featureStates, checkAgainstClipLayer ? replacementSource : null);
+            globalPlacement.finishSourceProcessing();
+        }
     }
 
     override queryRadius(): number {

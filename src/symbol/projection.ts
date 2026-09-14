@@ -1,11 +1,12 @@
 import Point from '@mapbox/point-geometry';
 import {mat2, mat4, vec3, vec4} from 'gl-matrix';
 import {addDynamicAttributes, updateGlobeVertexNormal} from '../data/bucket/symbol_bucket';
-import {WritingMode} from '../symbol/shaping';
+import {WritingMode} from '../symbol/shaping_shared';
 import {calculateGlobeLabelMatrix, globeToMercatorTransition} from '../geo/projection/globe_util';
 import {mercatorXfromLng, mercatorYfromLat} from '../geo/mercator_coordinate';
 import EXTENT from '../style-spec/data/extent';
 import {degToRad} from '../util/util';
+import {xyTransformMat4} from '../util/mat4';
 import {evaluateSizeForFeature, evaluateSizeForZoom} from './symbol_size';
 
 import type {CanonicalTileID, OverscaledTileID} from '../source/tile_id';
@@ -23,7 +24,7 @@ import type {
 } from '../data/array_types';
 import type {Elevation} from '../terrain/elevation';
 
-export {updateLineLabels, hideGlyphs, getLabelPlaneMatrixForRendering, getLabelPlaneMatrixForPlacement, getGlCoordMatrix, project, projectClamped, getPerspectiveRatio, placeFirstAndLastGlyph, placeGlyphAlongLine, xyTransformMat4};
+export {updateLineLabels, hideGlyphs, getLabelPlaneMatrixForRendering, getLabelPlaneMatrixForPlacement, getGlCoordMatrix, project, projectClamped, getPerspectiveRatio, placeFirstAndLastGlyph, placeGlyphAlongLine};
 
 export type GetElevation = (p: Point, elevation: Elevation | null, elevationFeature: ElevationFeature | null) => [number, number, number];
 
@@ -839,12 +840,3 @@ function hideGlyphs(num: number, dynamicLayoutVertexArray: SymbolDynamicLayoutAr
     dynamicLayoutVertexArray.float32.fill(-Infinity, offset * 4, end * 4);
 }
 
-// For line label layout, we're not using z output and our w input is always 1
-// This custom matrix transformation ignores those components to make projection faster
-function xyTransformMat4(out: vec4, a: vec4, m: mat4): vec4 {
-    const x = a[0], y = a[1];
-    out[0] = m[0] * x + m[4] * y + m[12];
-    out[1] = m[1] * x + m[5] * y + m[13];
-    out[3] = m[3] * x + m[7] * y + m[15];
-    return out;
-}

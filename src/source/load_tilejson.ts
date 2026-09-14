@@ -61,26 +61,14 @@ function getInlinedTileJSON(data?: TileJSON, language?: string, worldview?: stri
         return data;
     }
 
-    // If we don't support this language and worldview in TileJSON
-    // or in the same time some of them is not defined
-    // we can safely use inlined default
-    if (!(language in (data.language_options || {})) && !(worldview in (data.worldview_options || {}))) {
-        // There is exception for empty language or worldview options:
-        // If we don't have any language or worldview options
-        // we should always request TileJSON
-        if (!data.language_options || !data.worldview_options) {
-            return null;
-        }
-
-        return data;
-    }
-
     return null;
 }
 
 /**
  * Merges matching variant properties into the TileJSON.
- * Currently only supports the "meshopt" capability.
+ * Supports "meshopt" and "meshopt-v2+lod" capabilities; prefers "meshopt-v2+lod" when both are present.
+ * A variant is only selected when its capabilities array contains exactly one recognized value,
+ * so future TileJSONs advertising unknown capabilities won't break existing SDKs.
  * Throws on malformed variant data.
  * @private
  */
@@ -89,6 +77,8 @@ export function mergeVariants(tileJSON: Partial<TileJSON>): Partial<TileJSON> {
     if (!Array.isArray(tileJSON.variants)) {
         throw new Error("variants must be an array");
     }
+    let meshoptVariant: (typeof tileJSON.variants)[0] | null = null;
+    let meshoptLodVariant: (typeof tileJSON.variants)[0] | null = null;
     for (const variant of tileJSON.variants) {
         if (variant == null || typeof variant !== 'object' || variant.constructor !== Object) {
             throw new Error("variant must be an object");
@@ -96,11 +86,17 @@ export function mergeVariants(tileJSON: Partial<TileJSON>): Partial<TileJSON> {
         if (!Array.isArray(variant.capabilities)) {
             throw new Error("capabilities must be an array");
         }
-        // In this version we only support meshopt; check there are no other capabilities
-        // so future TileJSONs with more capabilities won't break existing SDKs
-        if (variant.capabilities.length === 1 && variant.capabilities[0] === "meshopt") {
-            return Object.assign(tileJSON, variant);
+        if (variant.capabilities.length === 1) {
+            if (variant.capabilities[0] === "meshopt-v2+lod") {
+                meshoptLodVariant = variant;
+            } else if (variant.capabilities[0] === "meshopt") {
+                meshoptVariant = variant;
+            }
         }
+    }
+    const selected = meshoptLodVariant !== null ? meshoptLodVariant : meshoptVariant;
+    if (selected !== null) {
+        return Object.assign(tileJSON, selected);
     }
     return tileJSON;
 }

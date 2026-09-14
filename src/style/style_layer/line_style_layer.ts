@@ -89,20 +89,22 @@ const getLineFloorwidthProperty = () => {
 };
 
 class LineStyleLayer extends StyleLayer {
-    override type: 'line';
+    override type!: 'line';
 
-    override _unevaluatedLayout: Layout<LayoutProps>;
-    override layout: PossiblyEvaluated<LayoutProps>;
+    override _unevaluatedLayout!: Layout<LayoutProps>;
+    override layout!: PossiblyEvaluated<LayoutProps>;
 
     gradientVersion: number;
-    stepInterpolant: boolean;
+    stepInterpolant!: boolean;
+    borderGradientVersion: number;
+    borderStepInterpolant!: boolean;
 
     hasElevatedBuckets: boolean;
     hasNonElevatedBuckets: boolean;
 
-    override _transitionablePaint: Transitionable<PaintProps>;
-    override _transitioningPaint: Transitioning<PaintProps>;
-    override paint: PossiblyEvaluated<PaintProps>;
+    override _transitionablePaint!: Transitionable<PaintProps>;
+    override _transitioningPaint!: Transitioning<PaintProps>;
+    override paint!: PossiblyEvaluated<PaintProps>;
 
     lineBlendFbos: LineBlendFbos | null;
     // Async GPU readback state for additive-mode density normalisation.
@@ -115,6 +117,7 @@ class LineStyleLayer extends StyleLayer {
             this.layout = new PossiblyEvaluated(properties.layout);
         }
         this.gradientVersion = 0;
+        this.borderGradientVersion = 0;
         this.hasElevatedBuckets = false;
         this.hasNonElevatedBuckets = false;
         this.lineBlendFbos = null;
@@ -131,11 +134,22 @@ class LineStyleLayer extends StyleLayer {
             // The gradient texture bakes in LUT-transformed colors; toggling
             // use-theme changes the effective LUT and requires regeneration.
             this.gradientVersion = (this.gradientVersion + 1) % Number.MAX_SAFE_INTEGER;
+        } else if (name === 'line-border-gradient') {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+            const expression: ZoomConstantExpression<'source'> = ((this._transitionablePaint._values['line-border-gradient'].value.expression) as any);
+            this.borderStepInterpolant = expression._styleExpression && expression._styleExpression.expression instanceof Step;
+            this.borderGradientVersion = (this.borderGradientVersion + 1) % Number.MAX_SAFE_INTEGER;
+        } else if (name === 'line-border-gradient-use-theme') {
+            this.borderGradientVersion = (this.borderGradientVersion + 1) % Number.MAX_SAFE_INTEGER;
         }
     }
 
     gradientExpression(): StylePropertyExpression {
         return this._transitionablePaint._values['line-gradient'].value.expression;
+    }
+
+    borderGradientExpression(): StylePropertyExpression {
+        return this._transitionablePaint._values['line-border-gradient'].value.expression;
     }
 
     widthExpression(): StylePropertyExpression {
@@ -233,7 +247,9 @@ class LineStyleLayer extends StyleLayer {
     }
 
     override mayUse(type: RuntimeModuleType): boolean {
-        return type === 'HD' && rawLayoutMayUseHD(this, 'line-elevation-reference', v => v === 'hd-road-markup');
+        if (type === 'HD') return rawLayoutMayUseHD(this, 'line-elevation-reference', v => v === 'hd-road-markup');
+        if (type === 'Lite') return lineMayUseLite(this);
+        return false;
     }
 
     override prepare(): Promise<void> {
@@ -275,6 +291,23 @@ class LineStyleLayer extends StyleLayer {
 }
 
 export default LineStyleLayer;
+
+function lineMayUseLite(layer: LineStyleLayer): boolean {
+    if (!layer._unevaluatedLayout) return false;
+    const ref = layer._unevaluatedLayout.getValue('line-elevation-reference');
+    // Any explicit reference other than 'none' — including hd-road-markup and
+    // data-driven expressions (conservatively) — is treated as needing Lite. hd-road-markup
+    // technically never calls forceTerrainMode on its own, but styles that use it commonly
+    // combine it with other elevated features anyway, and an occasional unnecessary preload
+    // is a cheap, safe default.
+    if (ref !== undefined && (typeof ref !== 'string' || ref !== 'none')) return true;
+    // Reference is 'none' or unset: a non-zero line-z-offset still forces terrain
+    // mode, silently falling back to a ground reference (see LineBucket#populate).
+    const zOffset = layer._unevaluatedLayout.getValue('line-z-offset');
+    if (zOffset === undefined) return false;
+    if (typeof zOffset !== 'number') return true;
+    return zOffset !== 0;
+}
 
 function getLineWidth(lineWidth: number, lineGapWidth: number) {
     if (lineGapWidth > 0) {

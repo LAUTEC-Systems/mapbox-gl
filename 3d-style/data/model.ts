@@ -2,7 +2,7 @@ import LngLat from '../../src/geo/lng_lat';
 import Texture from '../../src/render/texture';
 import {Aabb} from '../../src/util/primitives';
 import {mat4, vec4} from 'gl-matrix';
-import {modelAttributes, normalAttributes, texcoordAttributes, color3fAttributes, color4fAttributes, featureAttributes} from './model_attributes';
+import {modelAttributes, normalAttributes, texcoordAttributes, texcoordNormalizedAttributes, color3fAttributes, color4fAttributes, featureAttributes} from './model_attributes';
 import SegmentVector from '../../src/data/segment';
 import {globeToMercatorTransition} from '../../src/geo/projection/globe_util';
 import {number as interpolate} from '../../src/style-spec/util/interpolate';
@@ -11,7 +11,7 @@ import {rotationScaleYZFlipMatrix, getBoxBottomFace, rotationFor3Points, convert
 import {degToRad} from '../../src/util/util';
 
 import type {StructArray} from '../../src/util/struct_array';
-import type {ModelLayoutArray, TriangleIndexArray, NormalLayoutArray, TexcoordLayoutArray, FeatureVertexArray} from '../../src/data/array_types';
+import type {ModelLayoutArray, TriangleIndexArray, NormalLayoutArray, TexcoordLayoutArray, TexcoordNormalizedLayoutArray, FeatureVertexArray} from '../../src/data/array_types';
 import type Color from '../../src/style-spec/util/color';
 import type {vec2, vec3, quat} from 'gl-matrix';
 import type Context from '../../src/gl/context';
@@ -90,6 +90,19 @@ export type NodeOverride = {
 
 export const HEIGHTMAP_DIM = 64;
 
+// A vertex's feature id carries one of these in its low 4 bits, which selects the per-part style the
+// renderer evaluates for it.
+export const PartIndices = {
+    wall: 1,
+    door: 2,
+    roof: 3,
+    window: 4,
+    lamp: 5,
+    logo: 6
+} as const;
+
+export const PartNames = ['', 'wall', 'door', 'roof', 'window', 'lamp', 'logo'] as const;
+
 export type Mesh = {
     // eslint-disable-next-line no-warning-comments
     indexArray: TriangleIndexArray // TODO: Add TriangleStrip, etc;
@@ -98,13 +111,17 @@ export type Mesh = {
     vertexBuffer: VertexBuffer;
     normalArray: NormalLayoutArray;
     normalBuffer: VertexBuffer;
-    texcoordArray: TexcoordLayoutArray;
+    texcoordArray: TexcoordLayoutArray | TexcoordNormalizedLayoutArray;
     texcoordBuffer: VertexBuffer;
     colorArray: StructArray;
     colorBuffer: VertexBuffer;
-    featureData: Uint32Array | Float32Array;
     featureArray: FeatureVertexArray;
-    pbrBuffer: VertexBuffer;
+    featureBuffer: VertexBuffer;
+    // featureArray is destroyed once uploaded, so gating reads this instead.
+    hasFeatureData: boolean;
+    // Vertex color of the first door-tagged vertex, cached while the feature data was loaded.
+    // Undefined for meshes with no door geometry. The door lights borrow it to style themselves.
+    doorVertexColor?: number;
     material: Material;
     aabb: Aabb;
     transformedAabb: Aabb;
@@ -135,6 +152,10 @@ export type ModelNode = {
     footprint: Footprint | null | undefined;
     lights: Array<AreaLight>;
     lightMeshIndex: number;
+    // Bounds of the mesh whose door geometry the lights mesh borrows its style from. The emissive
+    // height gradient of the lights resolves against these rather than their own bounds, which
+    // cover just the light quads.
+    lightsStyleAabb?: Aabb;
     elevation: number | null | undefined;
     anchor: vec2;
     hidden: boolean;
@@ -319,7 +340,7 @@ export default class Model {
         this.uri = uri;
         this.position = position != null ? new LngLat(position[0], position[1]) : new LngLat(0, 0);
 
-        this.orientation = orientation != null ? orientation : [0, 0, 0];
+        this.orientation = orientation ?? [0, 0, 0];
         this.nodes = nodes;
         this.uploaded = false;
         this.aabb = new Aabb([Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]);
@@ -413,14 +434,15 @@ export function uploadMesh(mesh: Mesh, context: Context, useSingleChannelOcclusi
         mesh.normalBuffer = context.createVertexBuffer(mesh.normalArray, normalAttributes.members, false, true);
     }
     if (mesh.texcoordArray) {
-        mesh.texcoordBuffer = context.createVertexBuffer(mesh.texcoordArray, texcoordAttributes.members, false, true);
+        const uvAttributes = mesh.texcoordArray.bytesPerElement === 8 ? texcoordAttributes : texcoordNormalizedAttributes;
+        mesh.texcoordBuffer = context.createVertexBuffer(mesh.texcoordArray, uvAttributes.members, false, true);
     }
     if (mesh.colorArray) {
         const colorAttributes = mesh.colorArray.bytesPerElement === 12 ? color3fAttributes : color4fAttributes;
         mesh.colorBuffer = context.createVertexBuffer(mesh.colorArray, colorAttributes.members, false, true);
     }
     if (mesh.featureArray) {
-        mesh.pbrBuffer = context.createVertexBuffer(mesh.featureArray, featureAttributes.members, true);
+        mesh.featureBuffer = context.createVertexBuffer(mesh.featureArray, featureAttributes.members, false, true);
     }
     mesh.segments = SegmentVector.simpleSegment(0, 0, mesh.vertexArray.length, mesh.indexArray.length);
 
@@ -521,8 +543,8 @@ function destroyMeshBuffers(mesh: Mesh) {
     if (mesh.colorBuffer) {
         mesh.colorBuffer.destroy();
     }
-    if (mesh.pbrBuffer) {
-        mesh.pbrBuffer.destroy();
+    if (mesh.featureBuffer) {
+        mesh.featureBuffer.destroy();
     }
     mesh.segments.destroy();
     if (mesh.material) {

@@ -127,13 +127,13 @@ class WorkerTile {
     maxUniformBufferBindings: number | null | undefined;
     maxUniformBlockSizeDwords: number | null | undefined;
 
-    status: 'parsing' | 'done';
-    data: VectorTile;
-    collisionBoxArray: CollisionBoxArray;
+    status!: 'parsing' | 'done';
+    data!: VectorTile;
+    collisionBoxArray!: CollisionBoxArray;
 
-    abort: () => void | null | undefined;
+    abort!: () => void | null | undefined;
     reloadCallback?: WorkerSourceVectorTileCallback | null | undefined;
-    vectorTile: VectorTile;
+    vectorTile!: VectorTile;
     rasterizeTask: AbortController | null | undefined;
 
     constructor(params: WorkerSourceVectorTileRequest) {
@@ -413,8 +413,6 @@ class WorkerTile {
                 assert(layer.source === this.source);
                 if (!this.isLayerActiveForTile(layer)) continue;
 
-                recalculateLayers(family, this.zoom, options.brightness, availableImages, this.worldview, options.activeFloors);
-
                 // Assign bucket.index and register the layer-id mapping synchronously in
                 // style order. The async prepare() chain below can resolve out of order
                 // (HD layers add a microtask tick for the dynamic-import await), and
@@ -424,6 +422,10 @@ class WorkerTile {
                 featureIndex.bucketLayerIDs.push(family.map((l) => makeFQID(l.id, l.scope)));
 
                 const processBucket = () => {
+                    // Recalculate right before populate: `family` layers are shared across tiles and recalculate
+                    // mutates their zoom-dependent layout in place. On the async prepare() path another tile could
+                    // otherwise recalculate at a different zoom in between, giving wrong zoom-stepped values (e.g. model-id).
+                    recalculateLayers(family, this.zoom, options.brightness, availableImages, this.worldview, options.activeFloors);
                     const styleLayer: StyleLayer = layer;
                     assert(styleLayer.createBucket);
                     const bucket: Bucket = buckets[layer.id] = styleLayer.createBucket({

@@ -36,10 +36,9 @@ tests-to-run.txt
 **/test/integration/**/test-results.xml
 **/test/integration/dist/**/*.js
 **/test/integration/dist/**/*.json
-**/test/build/vite/dist/dist/*
-**/test/build/webpack/dist/*
-test/build/*.tgz
+test/*.tgz
 .eslintcache
+.release-state.json
 src/style-spec/dist/index.cjs
 src/style-spec/dist/index.d.ts
 _batfish_site
@@ -61,3 +60,4 @@ test/usvg/test-suite/
 test/usvg/test-results.xml
 src/data/usvg/usvg_pb_renderer.js
 .env
+debug/index.html

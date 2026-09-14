@@ -26,19 +26,23 @@ in float stub_side;
 uniform sampler2D u_dash_image;
 uniform highp float u_floor_width_scale;
 
-in vec2 v_tex;
+in highp vec2 v_tex;
 #endif
 
 #ifdef DEBUG_ELEVATION_ID
 in vec3 v_elevation_id_col;
 #endif
 
-#if defined(RENDER_LINE_GRADIENT) || defined(RENDER_LINE_TRIM_OFFSET)
+#if defined(RENDER_LINE_GRADIENT) || defined(RENDER_LINE_BORDER_GRADIENT) || defined(RENDER_LINE_TRIM_OFFSET)
 in highp vec3 v_uv;
 #endif
 
 #ifdef RENDER_LINE_GRADIENT
 uniform sampler2D u_gradient_image;
+#endif
+
+#ifdef RENDER_LINE_BORDER_GRADIENT
+uniform sampler2D u_border_gradient_image;
 #endif
 
 #ifdef RENDER_LINE_TRIM_OFFSET
@@ -136,15 +140,50 @@ void main() {
 #endif
 
 #ifdef RENDER_LINE_DASH
-    float sdfdist = texture(u_dash_image, v_tex).r;
-    float sdfgamma = ANTIALIASING / (float(dash.z) + float(dash.w) / 65535.0);
+    // highp before /65535: that literal is Inf in mediump/FP16 (e.g. Mali-G71).
+    highp float dash_w = float(dash.w);
+    highp float dash_len = float(dash.z) + dash_w / 65535.0;
+    float sdfgamma = ANTIALIASING / float(dash_len);
     float scaled_floorwidth = (floorwidth * u_floor_width_scale);
-    alpha *= linearstep(0.5 - sdfgamma / scaled_floorwidth, 0.5 + sdfgamma / scaled_floorwidth, sdfdist);
+
+    // Number of dash-pattern periods covered by one framebuffer pixel.
+    float periods_per_pixel = fwidth(v_tex.x);
+
+    // Dash coverage is the fraction of one pattern period covered by dashes,
+    // in [0, 1]. It is the average alpha of the fully minified pattern. Packed
+    // in dash.y bits [15:4]; bits [3:0] hold the SDF half-height.
+    float dash_coverage = float(dash.y >> 4u) / 4095.0;
+    // Fade to average dash coverage before the pattern becomes undersampled:
+    // start at 0.25 periods per pixel and finish at the Nyquist limit (0.5).
+    float fade = linearstep(0.25, 0.5, periods_per_pixel);
+
+    // Widen SDF AA as each pixel covers more of the pattern.
+    float gamma = max(sdfgamma / scaled_floorwidth, 0.5 * periods_per_pixel);
+
+    if (fade >= 1.0) {
+        // Too minified for sampling.
+        alpha *= dash_coverage;
+    } else if (periods_per_pixel < 0.1) {
+        // One tap.
+        float sdfdist = texture(u_dash_image, v_tex).r;
+        alpha *= linearstep(0.5 - gamma, 0.5 + gamma, sdfdist);
+    } else {
+        // Two midpoint samples approximate filtering over the pattern range
+        // covered by the pixel. Limit the range to one repeating period.
+        float span = min(periods_per_pixel, 1.0);
+        float tap_offset = span * 0.25;
+        float sdf0 = texture(u_dash_image, vec2(v_tex.x - tap_offset, v_tex.y)).r;
+        float sdf1 = texture(u_dash_image, vec2(v_tex.x + tap_offset, v_tex.y)).r;
+        alpha *= mix(0.5 * (
+            linearstep(0.5 - gamma, 0.5 + gamma, sdf0) +
+            linearstep(0.5 - gamma, 0.5 + gamma, sdf1)
+        ), dash_coverage, fade);
+    }
 #endif
 
     highp vec4 out_color;
 #ifdef RENDER_LINE_GRADIENT
-    // For gradient lines, v_uv.xy are the coord specify where the texture will be simpled.
+    // For gradient lines, v_uv.xy are the coord specify where the texture will be sampled.
     out_color = texture(u_gradient_image, v_uv.xy);
 #else
     out_color = color;
@@ -189,6 +228,11 @@ void main() {
     float edge2 = border_width * u_width_scale + ANTIALIASING;
     float alpha2 = smoothstep(edge2 - pxStep, edge2 + pxStep, delta);
     if (alpha2 < 1.) {
+#ifdef RENDER_LINE_BORDER_GRADIENT
+        // line-border-gradient takes precedence over border_color and the auto-derived border color.
+        vec4 border_gradient_color = texture(u_border_gradient_image, v_uv.xy);
+        out_color = mix(border_gradient_color * trim_alpha, out_color, alpha2);
+#else
         if (border_color.a == 0.0) {
 #ifndef RENDER_LINE_GRADIENT
             float Y = (out_color.a > 0.01) ? luminance(out_color.rgb / out_color.a) : 1.; // out_color is premultiplied
@@ -205,6 +249,7 @@ void main() {
         } else {
             out_color = mix(border_color * trim_alpha, out_color, alpha2);
         }
+#endif
         out_color *= v_width2_dilute.w;
     }
 #endif
@@ -275,13 +320,8 @@ void main() {
     glFragColor = out_color;
 #endif
 #endif
-#ifdef DUAL_SOURCE_BLENDING
-    glFragColorSrc1 = vec4(vec3(0.0), emissive_strength);
-#else
-#ifdef USE_MRT1
-    out_Target1 = vec4(emissive_strength * glFragColor.a, 0.0, 0.0, glFragColor.a);
-#endif
-#endif
+
+    storeEmissiveColor(glFragColor, emissive_strength);
 
 #ifdef OVERDRAW_INSPECTOR
     glFragColor = vec4(1.0);

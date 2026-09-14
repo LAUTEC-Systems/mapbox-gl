@@ -13,6 +13,7 @@ import Fog from './fog';
 import Snow from './snow';
 import Rain from './rain';
 import {clone, deepEqual, filterObject, cartesianPositionToSpherical, warnOnce} from '../util/util';
+import {mercatorXfromLng, mercatorYfromLat} from '../geo/mercator_coordinate';
 import {getJSON, getReferrer, ResourceType} from '../util/ajax';
 import {isMapboxURL} from '../util/mapbox_url';
 import {stripQueryParameters} from '../util/url';
@@ -22,9 +23,10 @@ import Dispatcher from '../util/dispatcher';
 import Lights from '../../3d-style/style/lights';
 import {getProperties as getAmbientProps} from '../../3d-style/style/ambient_light_properties';
 import {getProperties as getDirectionalProps} from '../../3d-style/style/directional_light_properties';
-import {createExpression} from '../style-spec/expression/index';
+import {createExpression, createConfigExpression} from '../style-spec/expression/index';
 import {HD, prepareHD as prepareHDMain} from '../../modules/hd_main';
 import {prepareStandard as prepareStandardMain} from '../../modules/standard_main';
+import {Lite, prepareLite as prepareLiteMain} from '../../modules/lite_main';
 import {HD_ROAD_COVERAGE_SOURCE_LAYER} from '../source/frc_coverage_snapshot';
 import {DebugModule, prepareDebug} from '../../modules/debug';
 import {
@@ -43,8 +45,9 @@ import {QueryGeometry} from '../style/query_geometry';
 import {
     create as createSource,
     getType as getSourceType,
-    setType as setSourceType,
 } from '../source/source';
+import {isLazySourceType, ensureSourceType} from '../source/lazy_source_types';
+import LazySource from '../source/lazy_source';
 import {queryRenderedFeatures, queryRenderedSymbols, querySourceFeatures, shouldSkipFeatureVariant} from '../source/query_features';
 import SourceCache from '../source/source_cache';
 import {RenderSourceType} from '../source/render_source_type';
@@ -60,6 +63,9 @@ import {
 } from '../source/rtl_text_plugin';
 import PauseablePlacement from './pauseable_placement';
 import CrossTileSymbolIndex from '../symbol/cross_tile_symbol_index';
+import {GlobalPlacement} from '../placement/global_placement';
+import {SymbolIdRangeAllocator} from '../placement/symbol_id_range_allocator';
+import {subgroupOrderForLayerPosition} from '../placement/symbol_placement_parameters';
 import {validateCustomStyleLayer} from './style_layer/custom_style_layer';
 import {isFQID, makeFQID, getNameFromFQID, getInnerScopeFromFQID, getOuterScopeFromFQID} from '../util/fqid';
 import {shadowDirectionFromProperties} from '../../3d-style/render/shadow_utils';
@@ -78,7 +84,6 @@ import {StyleBOMUtils} from './style_bom_utils';
 import type IndoorManager from '../../3d-style/style/indoor_manager';
 import type {FontstackCompositing} from './glyph_loader';
 import type {PropertyValidatorOptions} from '../style-spec/validate/validate_property';
-import type {StylePropertySpecification} from '../style-spec/style-spec';
 import type Tile from '../source/tile';
 import type GeoJSONSource from '../source/geojson_source';
 import type {ReplacementSource} from "../../3d-style/source/replacement_source";
@@ -102,7 +107,6 @@ import type {
     ProjectionSpecification,
     TransitionSpecification,
     ConfigSpecification,
-    OptionSpecification,
     SchemaSpecification,
     CameraSpecification,
     FeaturesetsSpecification,
@@ -112,7 +116,6 @@ import type {
     LayerBaseSpecification,
     TerrainSpecificationUpdate
 } from '../style-spec/types';
-import type {Callback} from '../types/callback';
 import type {StyleImage, StyleImageMap} from './style_image';
 import type Transform from '../geo/transform';
 import type {Map as MapboxMap} from '../ui/map';
@@ -121,13 +124,12 @@ import type {vec3} from 'gl-matrix';
 import type {LightProps as Directional} from '../../3d-style/style/directional_light_properties';
 import type {LightProps as Ambient} from '../../3d-style/style/ambient_light_properties';
 import type {Placement} from '../symbol/placement';
-import type {PlacementAlgorithmName} from '../symbol/placement_algorithms';
 import type {Cancelable} from '../types/cancelable';
 import type {CustomLayerInterface} from './style_layer/custom_style_layer';
 import type {Validator, ValidationErrors} from './validate_style';
 import type {FeatureState, StyleExpression} from '../style-spec/expression/index';
 import type {PointLike} from '../types/point-like';
-import type {ISource, Source, SourceClass} from '../source/source';
+import type {ISource, Source} from '../source/source';
 import type {TransitionParameters, ConfigOptions} from './properties';
 import type {QrfQuery, QrfTarget, QueryResult} from '../source/query_features';
 import type {GeoJSONFeature, FeaturesetDescriptor, TargetDescriptor, default as Feature} from '../util/vectortile_to_geojson';
@@ -142,6 +144,7 @@ import type {TypedStyleLayer} from './style_layer/typed_style_layer';
 import type {LngLatLike} from '../geo/lng_lat';
 import type {RasterQueryParameters, RasterQueryResult} from '../source/raster_array_tile_source';
 import type {StyleBOM} from './style_bom_utils';
+import type {PlacementGroupOrders, SymbolPlacementParameters} from '../placement/symbol_placement_parameters';
 
 export type {StyleBOMEntry, StyleBOM} from './style_bom_utils';
 
@@ -163,19 +166,6 @@ export type QueryRenderedFeaturesetParams = {
 // to continue to allow canvas sources to be added at runtime/updated in
 // smart setStyle (see https://github.com/mapbox/mapbox-gl-js/pull/6424):
 const emitValidationErrors = (evented: Evented, errors?: ValidationErrors | null) => _emitValidationErrors(evented, errors && errors.filter(error => error.identifier !== 'source.canvas'));
-
-// Parse a config option's default or value with the option's declared type
-// fed to the expression parser. This drives implicit string→color coercion
-// inside expressions (e.g. `["interpolate", ..., "hsl(...)"]` on a color
-// option). Skipped for array options (the parser doesn't model the schema's
-// `array: true` flag) and for primitive values (they keep their original
-// literal shape so `getConfig` round-trips unchanged).
-const createConfigExpression = (option: OptionSpecification, value: unknown) => {
-    const propertySpec = (option.type && !option.array && Array.isArray(value)) ?
-        {type: option.type, 'property-type': 'data-constant'} as unknown as StylePropertySpecification :
-        undefined;
-    return createExpression(value, propertySpec);
-};
 
 // Operations the diff algorithm may emit that we handle incrementally without a full restyle.
 // Maintained as a plain Set of string constants — see src/style-spec/diff.ts.
@@ -219,7 +209,7 @@ const ignoredDiffOperations: ReadonlySet<string> = new Set([
 /**
  * Layer types that has no features and are not queryable with QRF API.
  */
-const featurelessLayerTypes = new Set(['background', 'sky', 'slot', 'custom']);
+const featurelessLayerTypes = new Set(['background', 'sky', 'slot', 'custom', 'placement-group']);
 
 const empty = emptyStyle();
 
@@ -296,6 +286,8 @@ type FeaturesetSelector = {
 
 export type LayerProperty = LayerBaseSpecification & PaintSpecification & LayoutSpecification;
 
+export type PlacementAlgorithmName = 'default' | 'global';
+
 const MAX_IMPORT_DEPTH = 5;
 const defaultTransition = {duration: 300, delay: 0};
 
@@ -304,7 +296,7 @@ const defaultTransition = {duration: 300, delay: 0};
  */
 class Style extends Evented<MapEvents> {
     map: MapboxMap;
-    stylesheet: StyleSpecification;
+    stylesheet!: StyleSpecification;
     dispatcher: Dispatcher;
     imageManager: ImageManager;
     glyphManager: GlyphManager;
@@ -312,19 +304,19 @@ class Style extends Evented<MapEvents> {
     indoorManager: IndoorManager | null;
     ambientLight: Lights<Ambient> | null | undefined;
     directionalLight: Lights<Directional> | null | undefined;
-    light: Light;
+    light!: Light;
     terrain: Terrain | null | undefined;
     disableElevatedTerrain: boolean | null | undefined;
     fog: Fog | null | undefined;
     snow: Snow | null | undefined;
     rain: Rain | null | undefined;
-    camera: CameraSpecification;
+    camera!: CameraSpecification;
     _styleColorTheme: StyleColorTheme;
     _styleColorThemeForScope: {
         [_: string]: StyleColorTheme;
     };
     transition: TransitionSpecification;
-    projection: ProjectionSpecification;
+    projection!: ProjectionSpecification;
 
     // Serializable identifier of style, which we use for telemetry
     globalId: string | null;
@@ -341,12 +333,13 @@ class Style extends Evented<MapEvents> {
 
     // Merged layers and sources
     _mergedOrder: Array<string>;
+    _mergedOrderVersion: number;
     _mergedLayers: Record<string, TypedStyleLayer>;
     _mergedIndoor: Record<string, Set<string>>;
     // Whether indoor is actually turned on by config (an indoor-source layer is visible),
     // not merely declared in the stylesheet. Cached so per-tile `isIndoorEnabled()` is cheap.
     _indoorEnabled: boolean;
-    _mergedSlots: Array<string>;
+    _mergedSlots!: Array<string>;
     _mergedSourceCaches: Record<string, SourceCache>;
     _mergedOtherSourceCaches: Record<string, SourceCache>;
     _mergedSymbolSourceCaches: Record<string, SourceCache>;
@@ -359,7 +352,7 @@ class Style extends Evented<MapEvents> {
     _crossSourceElevationActive: boolean;
     _clipLayerPresent: boolean;
 
-    _featuresetSelectors: Record<string, Array<FeaturesetSelector>>;
+    _featuresetSelectors!: Record<string, Array<FeaturesetSelector>>;
 
     _request: Cancelable | null | undefined;
     _spriteRequest: AbortController | null | undefined;
@@ -381,6 +374,7 @@ class Style extends Evented<MapEvents> {
         [_: string]: SourceCache;
     };
     _loaded: boolean;
+    _drapingLoaded?: boolean;
     _initialBroadcastDone: boolean;
     _programPrecompiler: ProgramPrecompiler | null;
     _rtlTextPluginCallback: (state: {pluginStatus: string; pluginURL: string | null | undefined}) => void;
@@ -402,9 +396,16 @@ class Style extends Evented<MapEvents> {
     _importedAsBasemap: boolean;
 
     crossTileSymbolIndex: CrossTileSymbolIndex;
-    pauseablePlacement: PauseablePlacement;
-    placement: Placement;
-    z: number;
+    pauseablePlacement!: PauseablePlacement;
+    placement!: Placement;
+    globalPlacement: GlobalPlacement | null;
+    // Generated symbol id ranges for the new placement pipeline, keyed by layer.
+    symbolIdRangeAllocator: SymbolIdRangeAllocator;
+    // Cache of _driveGlobalPlacement's groupOrders, valid as long as _mergedOrderVersion
+    // matches _groupOrdersVersion (i.e. _mergedOrder hasn't been rebuilt since).
+    _groupOrders: PlacementGroupOrders | null;
+    _groupOrdersVersion: number;
+    z!: number;
 
     _has3DLayers: boolean;
     _hasCircleLayers: boolean;
@@ -415,9 +416,6 @@ class Style extends Evented<MapEvents> {
 
     _hasDataDrivenEmissive: boolean;
 
-    // exposed to allow stubbing by unit tests
-    static getSourceType: typeof getSourceType;
-    static setSourceType: typeof setSourceType;
     static registerForPluginStateChange: typeof registerForPluginStateChange;
 
     constructor(map: MapboxMap, options: StyleOptions = {}) {
@@ -440,8 +438,13 @@ class Style extends Evented<MapEvents> {
 
         this._buildingIndex = new BuildingIndex(this);
         this.crossTileSymbolIndex = new CrossTileSymbolIndex();
+        this.globalPlacement = null;
+        this.symbolIdRangeAllocator = new SymbolIdRangeAllocator();
+        this._groupOrders = null;
+        this._groupOrdersVersion = -1;
 
         this._mergedOrder = [];
+        this._mergedOrderVersion = 0;
         this._drapedFirstOrder = [];
         this._mergedLayers = Object.create(null) as Style['_mergedLayers'];
         this._mergedIndoor = {};
@@ -536,6 +539,7 @@ class Style extends Evented<MapEvents> {
         this._hdElevation = null;
         this._crossSourceElevationActive = false;
         this._loaded = false;
+        this._drapingLoaded = undefined;
         this._initialBroadcastDone = false;
         this._programPrecompiler = this.map._precompilePrograms && this.isRootStyle() ?
             new ProgramPrecompiler() :
@@ -695,6 +699,14 @@ class Style extends Evented<MapEvents> {
         // correctness is enforced via await in `_load`
         // eslint-disable-next-line @typescript-eslint/no-floating-promises
         if (validate) prepareDebug();
+
+        // A Standard URL already guarantees the Standard chunk, so start it a style round trip
+        // before `_updateSources` would. HD isn't speculated on: everything pulling it in
+        // Standard (procedural buildings, indoor, elevated roads) is off unless config says so.
+        if (url.startsWith('mapbox://styles/mapbox/standard')) {
+            // eslint-disable-next-line @typescript-eslint/no-floating-promises
+            prepareStandardMain();
+        }
 
         this.globalId = this._getGlobalId(url);
         url = this.map._requestManager.normalizeStyleURL(url, options.accessToken);
@@ -953,6 +965,11 @@ class Style extends Evented<MapEvents> {
             }
         }
 
+        // Issue the iconset request before any style processing as it needs only the URL and the request manager
+        if (json.sprite) {
+            this._loadIconset(json.sprite);
+        }
+
         this._loaded = true;
 
         // Issue TileJSON requests immediately, before the expensive deep clone of the full style JSON.
@@ -971,9 +988,7 @@ class Style extends Evented<MapEvents> {
                 }
             }
 
-            if (json.sprite) {
-                this._loadIconset(json.sprite);
-            } else {
+            if (!json.sprite) {
                 this.imageManager.setLoaded(true, this.scope);
                 this.dispatcher.broadcast('spriteLoaded', {scope: this.scope});
             }
@@ -1042,25 +1057,6 @@ class Style extends Evented<MapEvents> {
                 });
             }
 
-            // Pre-warm glyph range 0 (codepoints 0-255, ASCII/Latin) for all constant font stacks.
-            // This fires the HTTP requests before any tiles arrive, eliminating the first step
-            // of the waterfall staircase (tiles → workers discover text → getGlyphs IPC → HTTP).
-            if (this.glyphManager.url) {
-                const fontStacks = new Set<string>();
-                for (const id in this._layers) {
-                    const layer = this._layers[id];
-                    if (layer.type === 'symbol' && layer.layout) {
-                        const fonts = layer.layout.get('text-font');
-                        if (fonts && fonts.value && fonts.value.kind === 'constant') {
-                            fontStacks.add(fonts.value.value.join(','));
-                        }
-                    }
-                }
-                for (const stack of fontStacks) {
-                    this.glyphManager.prefetchRange(stack, 0);
-                }
-            }
-
             if (this.stylesheet.featuresets) {
                 this.setFeaturesetSelectors(this.stylesheet.featuresets);
             }
@@ -1073,6 +1069,7 @@ class Style extends Evented<MapEvents> {
             if (terrain) {
                 this.checkCanvasFingerprintNoise();
                 if (!this.disableElevatedTerrain && !this.terrainSetForDrapingOnly()) {
+                    this._startLiteLoad();
                     this._createTerrain(terrain, DrapeRenderMode.elevated);
                 }
             }
@@ -1530,6 +1527,7 @@ class Style extends Evented<MapEvents> {
         }
 
         this._mergedLayers = mergedLayers;
+        this._mergedOrderVersion++;
         this.updateDrapeFirstLayers();
         this._buildingIndex.processLayersChanged();
         this._updateDataDrivenEmissiveStrength();
@@ -1637,11 +1635,19 @@ class Style extends Evented<MapEvents> {
     }
 
     applyProjectionUpdate() {
+        // Kick off Lite load as early as possible whenever globe is active — even before
+        // the style finishes loading — so the terrain renderer factory is registered by
+        // the time the first globe frame renders.
+        if (this.map.transform.projection.requiresDraping) {
+            this._startLiteLoad();
+        }
+
         if (!this._loaded) return;
         this.dispatcher.broadcast('setProjection', this.map.transform.projectionOptions);
 
         if (this.map.transform.projection.requiresDraping) {
-            if (!this.hasTerrain()) {
+            const hasTerrain = (this.getTerrain() || this.stylesheet.terrain) && !this.disableElevatedTerrain;
+            if (!hasTerrain) {
                 this.setTerrainForDraping();
             }
         } else if (this.terrainSetForDrapingOnly()) {
@@ -1702,8 +1708,6 @@ class Style extends Evented<MapEvents> {
             this.fire(new ErrorEvent(new Error(`Source "${iconset.source}" as specified by iconset "${iconsetId}" is not a "raster-array" source and cannot be used as an iconset source`)));
             return;
         }
-
-        source.partial = false;
 
         const imageProvider = new ImageProvider(iconsetId, this.scope, sourceCache);
         this.imageManager.addImageProvider(imageProvider, this.scope);
@@ -1795,6 +1799,9 @@ class Style extends Evented<MapEvents> {
             return false;
 
         if (this._styleColorTheme.lutLoading)
+            return false;
+
+        if (this._drapingLoaded === false)
             return false;
 
         for (const {style} of this.fragments) {
@@ -1972,6 +1979,17 @@ class Style extends Evented<MapEvents> {
         return source;
     }
 
+    _resolveLayerFragment(layerId: string): {layer: TypedStyleLayer, fragment: Style} | undefined {
+        const layer = this.getLayer(layerId);
+        if (!layer) {
+            this.fire(new ErrorEvent(new Error(`The layer '${layerId}' does not exist in the map's style.`)));
+            return;
+        }
+        const fragment = this.getFragmentStyle(layer.scope);
+        if (!fragment) return;
+        return {layer, fragment};
+    }
+
     handleIdle() {
         const painter = this.map.painter;
         if (!painter) return;
@@ -2091,10 +2109,10 @@ class Style extends Evented<MapEvents> {
                     // main can render without an extra await. Fire-and-forget: the tile-level
                     // gate in WorkerTile.parse / vector_tile_source `done()` awaits the same
                     // load promise for any tile that actually carries HD content.
-                    // `layer.prepare()` fires the worker-side HD load; `prepareHDMain()` is
-                    // called here (rather than inside prepare()) because importing hd_main
-                    // from style_layer.ts would drag the main-only chunk into the worker
-                    // bundle.
+                    // Both load into the main thread's graph: `layer.prepare()` the worker-shared
+                    // chunk (bucket classes needed to deserialize transfers), `prepareHDMain()`
+                    // the main-only one — kept out of `prepare()` since importing hd_main from
+                    // style_layer.ts would drag that chunk into the worker bundle.
                     // eslint-disable-next-line @typescript-eslint/no-floating-promises
                     layer.prepare();
                     // eslint-disable-next-line @typescript-eslint/no-floating-promises
@@ -2102,13 +2120,24 @@ class Style extends Evented<MapEvents> {
                 }
 
                 if (layer.mayUse('Standard')) {
-                    // Same pattern as HD: preload Standard on both threads before the first
-                    // tile carrying ModelBucket/Tiled3dModelBucket arrives. `layer.prepare()`
-                    // triggers worker-side load; `prepareStandardMain()` triggers main-side.
+                    // Same pattern as HD: preload both Standard chunks on the main thread
+                    // before the first tile carrying ModelBucket/Tiled3dModelBucket arrives.
                     // eslint-disable-next-line @typescript-eslint/no-floating-promises
                     layer.prepare();
                     // eslint-disable-next-line @typescript-eslint/no-floating-promises
                     prepareStandardMain();
+                }
+
+                if (layer.mayUse('Lite')) {
+                    // Lite is main-thread only (terrain rendering), so there's no worker-side
+                    // counterpart to `layer.prepare()` here. This covers elevated lines (e.g.
+                    // `line-elevation-reference: sea`/`ground`, or a non-zero `line-z-offset`
+                    // with no reference set) that call `painter.forceTerrainMode` at render
+                    // time even when the style has no `terrain` property. Without this, Lite
+                    // never loads, `_drapingLoaded` stays `undefined` (so `style.loaded()`
+                    // doesn't wait for it), and the first render silently skips elevation.
+                    this.checkCanvasFingerprintNoise();
+                    if (!this.disableElevatedTerrain) this._startLiteLoad();
                 }
 
                 const sourceCache = this.getLayerSourceCache(layer);
@@ -2149,7 +2178,7 @@ class Style extends Evented<MapEvents> {
 
         // Apply accumulated source-max-zoom overrides
         for (const fqid in this._mergedFillExtrusionSourceCaches) {
-            this._mergedFillExtrusionSourceCaches[fqid].setMaxzoomOverride(feSourceMaxZooms[fqid] != null ? feSourceMaxZooms[fqid] : null);
+            this._mergedFillExtrusionSourceCaches[fqid].setMaxzoomOverride(feSourceMaxZooms[fqid] ?? null);
         }
 
         if (this.terrain && layersUpdated) {
@@ -2164,9 +2193,11 @@ class Style extends Evented<MapEvents> {
 
         for (const sourceId in sourcesUsedBefore) {
             const sourceCache = this._mergedSourceCaches[sourceId];
+            const source = sourceCache.getSource() as ISource;
+            // First frame this source is reachable, so start the deferred load of a lazy type.
+            if (sourceCache.used && source instanceof LazySource) source.startLoad();
             if (sourcesUsedBefore[sourceId] !== sourceCache.used) {
-                const source = sourceCache.getSource() as ISource;
-                source.fire(new Event('data', {sourceDataType: 'visibility', dataType: 'source', sourceId: sourceCache.getSource().id}));
+                source.fire(new Event('data', {sourceDataType: 'visibility', dataType: 'source', sourceId: source.id}));
             }
         }
 
@@ -2453,15 +2484,26 @@ class Style extends Evented<MapEvents> {
         if (shouldValidate && this._validate(validateSource, `sources.${id}`, source, null, options)) return;
 
         if (this.map && this.map._collectResourceTiming) source.collectResourceTiming = true;
-        const sourceInstance = createSource(id, source, this.dispatcher, this);
+
+        // A source type whose class lives in a lazily-loaded module (e.g. `model`,
+        // `batched-model` in the Standard module). To keep `addSource` synchronous, add a
+        // placeholder source now and upgrade it in place once the module resolves.
+        const placeholder = isLazySourceType(source.type) && !getSourceType(source.type) ?
+            new LazySource(id, source as SourceSpecification, this.dispatcher, this) : undefined;
+        const sourceInstance: Source = placeholder ?
+            placeholder as unknown as Source :
+            createSource(id, source, this.dispatcher, this);
         sourceInstance.scope = this.scope;
 
-        sourceInstance.setEventedParent(this, () => ({
-            isSourceLoaded: this._isSourceCacheLoaded(sourceInstance.id),
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-            source: sourceInstance.serialize(),
-            sourceId: sourceInstance.id
-        }));
+        const setSourceEventedParent = (src: Source) => {
+            src.setEventedParent(this, () => ({
+                isSourceLoaded: this._isSourceCacheLoaded(src.id),
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+                source: src.serialize(),
+                sourceId: src.id
+            }));
+        };
+        setSourceEventedParent(sourceInstance);
 
         const addSourceCache = (renderSourceType?: RenderSourceType) => {
             const prefix = renderSourceType === RenderSourceType.Symbol ? 'symbol:' :
@@ -2489,6 +2531,34 @@ class Style extends Evented<MapEvents> {
 
         if (sourceInstance.onAdd)
             sourceInstance.onAdd(this.map);
+
+        if (placeholder) {
+            // Lazy types have no `symbol:`/`fill-extrusion:` caches, so a single `other:`
+            // SourceCache backs the placeholder. The load is deferred until the source is actually
+            // used, because a style may declare a lazy-typed source nothing references (Standard's
+            // `mapbox-landmarks` raster-array is only reachable through an iconset behind a
+            // default-off config) and its chunk would add a serial round trip to every load.
+            placeholder._loader = () => {
+                // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                ensureSourceType(source.type).then(() => {
+                    const SourceType = getSourceType(source.type);
+                    const sourceCache = this._otherSourceCaches[id];
+                    // The source may have been removed or replaced during the async gap — bail
+                    // unless the cache still holds this placeholder.
+                    if (!sourceCache || sourceCache.getSource() !== sourceInstance) return;
+                    if (!SourceType) {
+                        this.fire(new ErrorEvent(new Error(`Could not load module for source type "${source.type}".`)));
+                        return;
+                    }
+                    const realSource = createSource(id, source, this.dispatcher, this);
+                    realSource.scope = this.scope;
+                    setSourceEventedParent(realSource);
+                    sourceCache.setSource(realSource);
+                    if (realSource.onAdd) realSource.onAdd(this.map);
+                    this._changes.setDirty();
+                });
+            };
+        }
 
         // Avoid triggering redundant style update after adding initial sources.
         if (!options.isInitialLoad) {
@@ -2545,6 +2615,10 @@ class Style extends Evented<MapEvents> {
         source.setEventedParent(null);
         if (source.onRemove)
             source.onRemove(this.map);
+
+        // Tiles are spread across all workers, so every worker may hold an instance.
+        this.dispatcher.broadcast('removeSource', {type: source.type, source: id, scope: source.scope});
+
         this._changes.setDirty();
         return this;
     }
@@ -2576,13 +2650,11 @@ class Style extends Evented<MapEvents> {
     }
 
     getOwnSources(): Source[] {
-        const sources = [];
+        const sources: Source[] = [];
         for (const id in this._otherSourceCaches) {
             const sourceCache = this.getOwnSourceCache(id);
             if (sourceCache) sources.push(sourceCache.getSource());
         }
-
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-return
         return sources;
     }
 
@@ -2701,14 +2773,13 @@ class Style extends Evented<MapEvents> {
 
     getLights(): Array<LightsSpecification> | null | undefined {
         if (!this.enable3dLights()) return null;
-        const lights = [];
+        const lights: LightsSpecification[] = [];
         if (this.directionalLight) {
             lights.push(this.directionalLight.get());
         }
         if (this.ambientLight) {
             lights.push(this.ambientLight.get());
         }
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-return
         return lights;
     }
 
@@ -2805,13 +2876,11 @@ class Style extends Evented<MapEvents> {
             return [];
         }
 
-        const layers = [];
+        const layers: TypedStyleLayer[] = [];
         for (const selector of featuresets[featuresetId].selectors) {
             const layer = style.getOwnLayer(selector.layer);
             if (layer) layers.push(layer);
         }
-
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-return
         return layers;
     }
 
@@ -2850,7 +2919,7 @@ class Style extends Evented<MapEvents> {
         const schema = fragmentStyle.stylesheet.schema;
         if (!schema || !schema[key]) return;
 
-        const expressionParsed = createConfigExpression(schema[key], value);
+        const expressionParsed = createConfigExpression(value, schema[key]);
         if (expressionParsed.result !== 'success') {
             emitValidationErrors(this, expressionParsed.value);
             return;
@@ -2864,7 +2933,7 @@ class Style extends Evented<MapEvents> {
 
         let defaultExpression: StyleExpression['expression'] | undefined;
         const {minValue, maxValue, stepValue, type, values} = schema[key];
-        const defaultExpressionParsed = createConfigExpression(schema[key], schema[key].default);
+        const defaultExpressionParsed = createConfigExpression(schema[key].default, schema[key]);
         if (defaultExpressionParsed.result === 'success') {
             defaultExpression = defaultExpressionParsed.value.expression;
         }
@@ -2940,13 +3009,13 @@ class Style extends Evented<MapEvents> {
             let configExpression: StyleExpression['expression'] | undefined;
 
             const expression = schema[id].default;
-            const expressionParsed = createConfigExpression(schema[id], expression);
+            const expressionParsed = createConfigExpression(expression, schema[id]);
             if (expressionParsed.result === 'success') {
                 defaultExpression = expressionParsed.value.expression;
             }
 
             if (config && config[id] !== undefined) {
-                const expressionParsed = createConfigExpression(schema[id], config[id]);
+                const expressionParsed = createConfigExpression(config[id], schema[id]);
                 if (expressionParsed.result === 'success') {
                     configExpression = expressionParsed.value.expression;
                 }
@@ -3193,6 +3262,7 @@ class Style extends Evented<MapEvents> {
 
         this._layerExpressionDependencies.delete(layer.fqid);
         this._changes.removeLayer(layer);
+        this.symbolIdRangeAllocator.releaseLayer(layer.runtimeLayerUID);
 
         const sourceCache = this.getOwnLayerSourceCache(layer);
 
@@ -3458,12 +3528,8 @@ class Style extends Evented<MapEvents> {
                     fragment.setFeatureState({id: target.id, source, sourceLayer}, state);
                 }
             } else if ('layerId' in target.target) {
-                const {layerId} = target.target;
-                const layer = this.getLayer(layerId);
-                if (!layer) return;
-                const fragment = this.getFragmentStyle(layer.scope);
-                if (!fragment) return;
-                fragment.setFeatureState({id: target.id, source: layer.source, sourceLayer: layer.sourceLayer}, state);
+                const resolved = this._resolveLayerFragment(target.target.layerId);
+                resolved?.fragment.setFeatureState({id: target.id, source: resolved.layer.source, sourceLayer: resolved.layer.sourceLayer}, state);
             }
 
             return;
@@ -3507,12 +3573,8 @@ class Style extends Evented<MapEvents> {
                     fragment.removeFeatureState({id: target.id, source, sourceLayer}, key);
                 }
             } else if ('layerId' in target.target) {
-                const {layerId} = target.target;
-                const layer = this.getLayer(layerId);
-                if (!layer) return;
-                const fragment = this.getFragmentStyle(layer.scope);
-                if (!fragment) return;
-                fragment.removeFeatureState({id: target.id, source: layer.source, sourceLayer: layer.sourceLayer}, key);
+                const resolved = this._resolveLayerFragment(target.target.layerId);
+                resolved?.fragment.removeFeatureState({id: target.id, source: resolved.layer.source, sourceLayer: resolved.layer.sourceLayer}, key);
             }
 
             return;
@@ -3564,12 +3626,8 @@ class Style extends Evented<MapEvents> {
                     }
                 }
             } else if ('layerId' in target.target) {
-                const {layerId} = target.target;
-                const layer = this.getLayer(layerId);
-                if (!layer) return;
-                const fragment = this.getFragmentStyle(layer.scope);
-                if (!fragment) return;
-                finalState = fragment.getFeatureState({id: target.id, source: layer.source, sourceLayer: layer.sourceLayer});
+                const resolved = this._resolveLayerFragment(target.target.layerId);
+                finalState = resolved?.fragment.getFeatureState({id: target.id, source: resolved.layer.source, sourceLayer: resolved.layer.sourceLayer});
             }
 
             return finalState;
@@ -3606,13 +3664,8 @@ class Style extends Evented<MapEvents> {
                 fragment.removeFeatureState({source, sourceLayer});
             }
         } else {
-            const {layerId} = target;
-            const layer = this.getLayer(layerId);
-            if (!layer) {
-                this.fire(new ErrorEvent(new Error(`The layer '${layerId}' does not exist in the map's style and cannot be used to reset feature states.`)));
-                return;
-            }
-            this.removeFeatureState({source: layer.source, sourceLayer: layer.sourceLayer});
+            const resolved = this._resolveLayerFragment(target.layerId);
+            resolved?.fragment.removeFeatureState({source: resolved.layer.source, sourceLayer: resolved.layer.sourceLayer});
         }
     }
 
@@ -3868,7 +3921,7 @@ class Style extends Evented<MapEvents> {
 
         const features = this.queryRenderedTargets(queryGeometry, targets, transform);
 
-        const targetFeatures = [];
+        const targetFeatures: TargetFeature[] = [];
         const uniqueFeatureSet = new Set<string>();
         for (const feature of features) {
             for (const variant of feature.variants[targetId]) {
@@ -3878,8 +3931,6 @@ class Style extends Evented<MapEvents> {
                 targetFeatures.push(new TargetFeature(feature, variant));
             }
         }
-
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-return
         return targetFeatures;
     }
 
@@ -4003,15 +4054,6 @@ class Style extends Evented<MapEvents> {
         return results;
     }
 
-    addSourceType(name: string, SourceType: SourceClass, callback: Callback<undefined>): void {
-        if (Style.getSourceType(name)) {
-            return callback(new Error(`A source type called "${name}" already exists.`));
-        }
-
-        Style.setSourceType(name, SourceType);
-        return callback(null, null);
-    }
-
     getFlatLight(): LightSpecification {
         return this.light.getLight();
     }
@@ -4043,7 +4085,31 @@ class Style extends Evented<MapEvents> {
         return this.hasTerrain() ? this.terrain.get() : null;
     }
 
+    /**
+     * Triggers the Lite module load and tracks pending state so that `loaded()` returns
+     * false until the terrain renderer factory is registered. Idempotent — safe to call
+     * multiple times; the module is cached by the JS runtime after the first import.
+     */
+    _startLiteLoad() {
+        if (this._drapingLoaded !== undefined) return;
+        this._drapingLoaded = false;
+        const rendererWasReady = !!Lite.loaded;
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+        prepareLiteMain().then(() => {
+            this._drapingLoaded = true;
+            if (this.map._removed || this.dispatcher.actors.length === 0) return;
+
+            if (rendererWasReady) {
+                this.map.triggerRepaint();
+            } else {
+                this.applyProjectionUpdate();
+                this.map._update(false);
+            }
+        });
+    }
+
     setTerrainForDraping() {
+        this._startLiteLoad();
         const mockTerrainOptions = {source: '', exaggeration: 0};
         this.setTerrain(mockTerrainOptions, DrapeRenderMode.deferred);
     }
@@ -4094,6 +4160,7 @@ class Style extends Evented<MapEvents> {
         let options: TerrainSpecification | TerrainSpecificationUpdate = terrainOptions;
         const isUpdating = !("source" in terrainOptions) || terrainOptions.source == null;
         if (drapeRenderMode === DrapeRenderMode.elevated) {
+            this._startLiteLoad();
             if (this.disableElevatedTerrain) return;
 
             // Input validation and source object unrolling
@@ -4369,6 +4436,10 @@ class Style extends Evented<MapEvents> {
         this._force3DLayerUpdate();
         const parameters = this._getTransitionParameters({duration: 0});
         terrain.updateTransitions(parameters);
+        // Evaluate the terrain properties synchronously so that consumers such as
+        // Terrain#update can access them before the next Style#update runs (#13665).
+        const evaluationParameters = new EvaluationParameters(this.z || 0, {...parameters, worldview: this.map.getWorldview()});
+        terrain.recalculate(evaluationParameters);
     }
 
     _force3DLayerUpdate() {
@@ -4520,7 +4591,7 @@ class Style extends Evented<MapEvents> {
             const layer = this._mergedLayers[id];
             if (layer.type === 'building') {
                 sourcesForBuildingLayers.add(layer.source);
-            } else if (layer.type === 'raster' && layer.paint && layer.paint.get('raster-elevation-reference') === 'ground') {
+            } else if (layer.type === 'raster' && layer.paint && (layer.paint.get('raster-elevation-reference') === 'ground')) {
                 sourcesWithRasterElevatedOverTerrain.add(layer.source);
             }
             if (layer.hasElevation() && !sourcesWithElevatedLayers.has(layer.source)) {
@@ -4612,7 +4683,14 @@ class Style extends Evented<MapEvents> {
         const layerTiles: Record<string, Tile[]> = {};
         const layerTilesInYOrder: Record<string, Tile[]> = {};
 
-        for (const layerId of this._mergedOrder) {
+        const useGlobalPlacement = placementAlgorithmName === 'global';
+        const layerOrder = useGlobalPlacement ? [] : this._mergedOrder;
+
+        if (useGlobalPlacement) {
+            this._driveGlobalPlacement(transform, replacementSource);
+        }
+
+        for (const layerId of layerOrder) {
             const styleLayer = this._mergedLayers[layerId];
             if (styleLayer.type !== 'symbol') continue;
 
@@ -4632,7 +4710,7 @@ class Style extends Evented<MapEvents> {
             const layerBucketsChanged = this.crossTileSymbolIndex.addLayer(styleLayer, sourceTiles, transform.center.lng, transform.projection);
             symbolBucketsChanged = symbolBucketsChanged || layerBucketsChanged;
         }
-        this.crossTileSymbolIndex.pruneUnusedLayers(this._mergedOrder);
+        this.crossTileSymbolIndex.pruneUnusedLayers(layerOrder);
 
         const transformChanged = Boolean(this.placement && !transform.equals(this.placement.transform));
         const replacementSourceChanged = Boolean(this.placement && ((this.placement.lastReplacementSourceUpdateTime !== 0 && !replacementSource) || this.placement.lastReplacementSourceUpdateTime !== replacementSource.updateTime));
@@ -4647,7 +4725,7 @@ class Style extends Evented<MapEvents> {
 
         if (this.pauseablePlacement.isFullPlacementRequested() || !this.pauseablePlacement.placement || newImmediatePlacementRequired || newNormalPlacementRequired) {
             const fogState = this.fog && transform.projection.supportsFog ? this.fog.state : null;
-            this.pauseablePlacement = this.pauseablePlacement.startNewPlacement(transform, this._mergedOrder, showCollisionBoxes, fadeDuration, crossSourceCollisions, this.placement, fogState, this._buildingIndex, placementAlgorithmName);
+            this.pauseablePlacement = this.pauseablePlacement.startNewPlacement(transform, layerOrder, showCollisionBoxes, fadeDuration, crossSourceCollisions, this.placement, fogState, this._buildingIndex);
             if (this.map.painter) {
                 const raw = this.map.painter.maxFrontCutoffRawStart;
                 if (raw > 0) {
@@ -4662,7 +4740,7 @@ class Style extends Evented<MapEvents> {
         }
 
         if (!this.pauseablePlacement.isDone()) {
-            this.pauseablePlacement.continuePlacement(this._mergedOrder, this._mergedLayers, layerTiles, layerTilesInYOrder, this.map.painter.scaleFactor);
+            this.pauseablePlacement.continuePlacement(layerOrder, this._mergedLayers, layerTiles, layerTilesInYOrder, this.map.painter.scaleFactor);
 
             if (this.pauseablePlacement.isDone()) {
                 this.placement = this.pauseablePlacement.commit(browser.now());
@@ -4681,18 +4759,81 @@ class Style extends Evented<MapEvents> {
 
         if (placementCommitted || symbolBucketsChanged) {
             this._buildingIndex.onNewFrame(transform.zoom);
-            for (let i = 0; i < this._mergedOrder.length; i++) {
-                const layerId = this._mergedOrder[i];
+            for (let i = 0; i < layerOrder.length; i++) {
+                const layerId = layerOrder[i];
                 const styleLayer = this._mergedLayers[layerId];
                 if (styleLayer.type !== 'symbol') continue;
                 if (styleLayer.visibility === 'none') continue;
-                const checkAgainstClipLayer = this.isLayerClipped(styleLayer);
-                this.placement.updateLayerOpacities(styleLayer, layerTiles[makeFQID(styleLayer.source, styleLayer.scope)], i, checkAgainstClipLayer ? replacementSource : null);
+                const isLayerClipped = this.isLayerClipped(styleLayer);
+                this.placement.updateLayerOpacities(styleLayer, layerTiles[makeFQID(styleLayer.source, styleLayer.scope)], i, isLayerClipped ? replacementSource : null, showCollisionBoxes, this.map.painter.scaleFactor);
             }
         }
 
         // needsRender is false when we have just finished a placement that didn't change the visibility of any symbols
         return !this.pauseablePlacement.isDone() || this.placement.isStale() || this.placement.hasTransitions(browser.now());
+    }
+
+    // Runs one global placement pass per frame, driving each symbol layer's placeSymbols() hook.
+    _driveGlobalPlacement(transform: Transform, replacementSource: ReplacementSource) {
+        if (transform.width === 0 || transform.height === 0) return;
+
+        if (!this.globalPlacement) {
+            this.globalPlacement = new GlobalPlacement();
+        }
+        const globalPlacement = this.globalPlacement;
+
+        globalPlacement.startPlacement(browser.now(), transform.width, transform.height);
+
+        this._buildingIndex.onNewFrame(transform.zoom);
+
+        const fogState = this.fog && transform.projection.supportsFog ? this.fog.state : null;
+
+        if (this._groupOrdersVersion !== this._mergedOrderVersion || !this._groupOrders) {
+            const groupOrders: PlacementGroupOrders = new Map();
+            for (let position = 0; position < this._mergedOrder.length; position++) {
+                const styleLayer = this._mergedLayers[this._mergedOrder[position]];
+                if (styleLayer.type === 'placement-group') {
+                    groupOrders.set(styleLayer.fqid, subgroupOrderForLayerPosition(position));
+                }
+            }
+            this._groupOrders = groupOrders;
+            this._groupOrdersVersion = this._mergedOrderVersion;
+        }
+        const groupOrders = this._groupOrders;
+
+        const mercatorCenter: [number, number] = [
+            mercatorXfromLng(transform.center.lng),
+            mercatorYfromLat(transform.center.lat)
+        ];
+
+        const placementParameters: SymbolPlacementParameters = {
+            globalPlacement,
+            idRangeAllocator: this.symbolIdRangeAllocator,
+            transform,
+            buildingIndex: this._buildingIndex,
+            fogState,
+            groupOrders,
+            replacementSource,
+            mercatorCenter
+        };
+
+        for (let position = 0; position < this._mergedOrder.length; position++) {
+            const styleLayer = this._mergedLayers[this._mergedOrder[position]];
+            if (styleLayer.type !== 'symbol') continue;
+
+            const sourceCache = this.getLayerSourceCache(styleLayer);
+            if (!sourceCache) continue;
+            const tiles = sourceCache.getRenderableIds(true).map((id) => sourceCache.getTileByID(id));
+
+            // region.order (baked into replacementSource ahead of this pass) is only comparable
+            // to this position when both share the same layer ordering -- true unless terrain
+            // draping reorders layers relative to _mergedOrder, a pre-existing quirk legacy
+            // placement is equally exposed to.
+            const checkAgainstClipLayer = this.isLayerClipped(styleLayer);
+            styleLayer.placeSymbols(placementParameters, tiles, position, sourceCache, checkAgainstClipLayer);
+        }
+
+        globalPlacement.finishPlacementRun();
     }
 
     _releaseSymbolFadeTiles() {
@@ -4903,13 +5044,11 @@ class Style extends Evented<MapEvents> {
     }
 
     getSources(): Source[] {
-        const sources = [];
+        const sources: Source[] = [];
         for (const id in this._mergedOtherSourceCaches) {
             const sourceCache = this._mergedOtherSourceCaches[id];
             if (sourceCache) sources.push(sourceCache.getSource());
         }
-
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-return
         return sources;
     }
 
@@ -4956,24 +5095,13 @@ class Style extends Evented<MapEvents> {
         if (fqid == null)
             return Object.values(this._mergedSourceCaches);
 
-        const sourceCaches = [];
-        if (this._mergedOtherSourceCaches[fqid]) {
-            sourceCaches.push(this._mergedOtherSourceCaches[fqid]);
-        }
-        if (this._mergedSymbolSourceCaches[fqid]) {
-            sourceCaches.push(this._mergedSymbolSourceCaches[fqid]);
-        }
-        if (this._mergedFillExtrusionSourceCaches[fqid]) {
-            sourceCaches.push(this._mergedFillExtrusionSourceCaches[fqid]);
-        }
-        if (this._mergedHdRoadCoverageSourceCaches[fqid]) {
-            sourceCaches.push(this._mergedHdRoadCoverageSourceCaches[fqid]);
-        }
-        if (this._mergedHdRoadElevationSourceCaches[fqid]) {
-            sourceCaches.push(this._mergedHdRoadElevationSourceCaches[fqid]);
-        }
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-return
-        return sourceCaches;
+        return [
+            this._mergedOtherSourceCaches[fqid],
+            this._mergedSymbolSourceCaches[fqid],
+            this._mergedFillExtrusionSourceCaches[fqid],
+            this._mergedHdRoadCoverageSourceCaches[fqid],
+            this._mergedHdRoadElevationSourceCaches[fqid],
+        ].filter(Boolean);
     }
 
     updateSourceCaches() {
@@ -5017,24 +5145,13 @@ class Style extends Evented<MapEvents> {
     }
 
     getOwnSourceCaches(source: string): Array<SourceCache> {
-        const sourceCaches = [];
-        if (this._otherSourceCaches[source]) {
-            sourceCaches.push(this._otherSourceCaches[source]);
-        }
-        if (this._symbolSourceCaches[source]) {
-            sourceCaches.push(this._symbolSourceCaches[source]);
-        }
-        if (this._fillExtrusionSourceCaches[source]) {
-            sourceCaches.push(this._fillExtrusionSourceCaches[source]);
-        }
-        if (this._hdCoverage && this._hdCoverage.coverageSourceCaches[source]) {
-            sourceCaches.push(this._hdCoverage.coverageSourceCaches[source]);
-        }
-        if (this._hdElevation && this._hdElevation.elevationSourceCaches[makeFQID(source, this.scope)]) {
-            sourceCaches.push(this._hdElevation.elevationSourceCaches[makeFQID(source, this.scope)]);
-        }
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-return
-        return sourceCaches;
+        return [
+            this._otherSourceCaches[source],
+            this._symbolSourceCaches[source],
+            this._fillExtrusionSourceCaches[source],
+            this._hdCoverage && this._hdCoverage.coverageSourceCaches[source],
+            this._hdElevation && this._hdElevation.elevationSourceCaches[makeFQID(source, this.scope)],
+        ].filter(Boolean);
     }
 
     // Returns true if HD module isn't loaded yet and the layer needs a coverage source
@@ -5192,8 +5309,6 @@ class Style extends Evented<MapEvents> {
     }
 }
 
-Style.getSourceType = getSourceType;
-Style.setSourceType = setSourceType;
 Style.registerForPluginStateChange = registerForPluginStateChange;
 
 export default Style;

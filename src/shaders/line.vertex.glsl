@@ -27,10 +27,9 @@ out vec3 v_elevation_id_col;
 in float a_elevation_ground_scale;
 #endif
 
-// Includes in order: a_uv_x, a_split_index, a_line_progress
-// to reduce attribute count on older devices.
-// Only line-gradient and line-trim-offset will requires a_packed info.
-#if defined(RENDER_LINE_GRADIENT) || defined(RENDER_LINE_TRIM_OFFSET) || defined(RENDER_LINE_CURVE)
+// Includes in order: a_uv_x, a_split_index, a_line_progress to reduce attribute count on older devices.
+// Only line-gradient, line-border-gradient and line-trim-offset will requires a_packed info.
+#if defined(RENDER_LINE_GRADIENT) || defined(RENDER_LINE_BORDER_GRADIENT) || defined(RENDER_LINE_TRIM_OFFSET) || defined(RENDER_LINE_CURVE)
 in highp vec3 a_packed;
 #endif
 
@@ -84,20 +83,21 @@ out highp float v_road_z_offset;
 #endif
 #ifdef VARIABLE_LINE_WIDTH
 out float stub_side;
+uniform float u_width_addition;
 #endif
 
 #ifdef RENDER_LINE_DASH
 uniform highp float u_floor_width_scale;
 uniform vec2 u_texsize;
 uniform float u_tile_units_to_pixels;
-out vec2 v_tex;
+out highp vec2 v_tex;
 #endif
 
-#if defined(RENDER_LINE_GRADIENT) || defined(RENDER_LINE_TRIM_OFFSET)
+#if defined(RENDER_LINE_GRADIENT) || defined(RENDER_LINE_BORDER_GRADIENT) || defined(RENDER_LINE_TRIM_OFFSET)
 out highp vec3 v_uv;
 #endif
 
-#ifdef RENDER_LINE_GRADIENT
+#if defined(RENDER_LINE_GRADIENT) || defined(RENDER_LINE_BORDER_GRADIENT)
 uniform float u_image_height;
 #endif
 
@@ -223,7 +223,7 @@ void main() {
 #endif
 
     highp float line_progress = 0.0;
-#if defined(RENDER_LINE_GRADIENT) || defined(RENDER_LINE_TRIM_OFFSET) || defined(RENDER_LINE_CURVE)
+#if defined(RENDER_LINE_GRADIENT) || defined(RENDER_LINE_BORDER_GRADIENT) || defined(RENDER_LINE_TRIM_OFFSET) || defined(RENDER_LINE_CURVE)
     line_progress = a_packed[2];
 #endif
 
@@ -276,7 +276,10 @@ void main() {
 #ifdef VARIABLE_LINE_WIDTH
     float left_width = a_z_offset_width.y;
     float right_width = a_z_offset_width.z;
-    halfwidth = u_width_scale * (left ? left_width : right_width);
+    bool zero_right_width = border_width == 0.0 && right_width == 0.0;
+    halfwidth = left ? left_width : right_width;
+    halfwidth += u_width_addition * (zero_right_width ? (left ? 1.0 : 0.0) : 0.5); 
+    halfwidth *= u_width_scale;
 
     if (side_z_offset != 0.0) {
         // Lift the side of the line asymmetrically, based on the sign of side_z_offset
@@ -291,11 +294,10 @@ void main() {
 
     // Variable width is used as an offset for non-zero border_widths case.
     // Then the width of the visible part is defined by border_width.
-    offset = border_width > 0.0 ? (left_width + right_width) * u_width_scale : offset;
+    offset = border_width > 0.0 ? (left_width + right_width + u_width_addition) * u_width_scale : offset;
     halfwidth = border_width > 0.0 ? border_width * u_width_scale * 0.5 : halfwidth;
 
-    bool zero_right_width = border_width == 0.0 && right_width == 0.0;
-    symmetric_outset = zero_right_width ? u_width_scale * left_width : halfwidth;
+    symmetric_outset = zero_right_width ? u_width_scale * (left_width + u_width_addition) : halfwidth;
 
     // If the right width is 0, we are rendering an asymmetric line with a stub side
     // We should disable antialiasing and blur on this side to be able to stich two lines together
@@ -468,10 +470,10 @@ void main() {
     v_gamma_scale = 1.0;
 #endif
 
-#if defined(RENDER_LINE_GRADIENT) || defined(RENDER_LINE_TRIM_OFFSET)
+#if defined(RENDER_LINE_GRADIENT) || defined(RENDER_LINE_BORDER_GRADIENT) || defined(RENDER_LINE_TRIM_OFFSET)
     highp float a_uv_x = a_packed[0];
     float a_split_index = a_packed[1];
-#ifdef RENDER_LINE_GRADIENT
+#if defined(RENDER_LINE_GRADIENT) || defined(RENDER_LINE_BORDER_GRADIENT)
     highp float texel_height = 1.0 / u_image_height;
     highp float half_texel_height = 0.5 * texel_height;
 
@@ -483,10 +485,14 @@ void main() {
 
 #ifdef RENDER_LINE_DASH
     vec4 dashf = vec4(dash);
-    float totalLength = dashf.z + dashf.w / 65535.0;
+    // highp before /65535: that literal is Inf in mediump/FP16 (e.g. Mali-G71).
+    highp float dash_w = float(dash.w);
+    highp float totalLength = float(dash.z) + dash_w / 65535.0;
     float scale = totalLength == 0.0 ? 0.0 : u_tile_units_to_pixels / totalLength;
 
-    v_tex = vec2(a_linesofar * scale / (floorwidth * u_floor_width_scale), (-normal.y * dashf.y + dashf.x + 0.5) / u_texsize.y);
+    // Low 4 bits = half-height; high 12 = dash coverage (fragment only).
+    float dash_half_height = float(dash.y & 15u);
+    v_tex = vec2(a_linesofar * scale / (floorwidth * u_floor_width_scale), (-normal.y * dash_half_height + dashf.x + 0.5) / u_texsize.y);
 #endif
 
     v_width2_dilute = vec4(outset, inset, dilute_scale, dilute_border_scale);

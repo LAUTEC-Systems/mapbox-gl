@@ -4,7 +4,7 @@ import {process3DTile} from './model_loader';
 import {tileToMeter} from '../../src/geo/mercator_coordinate';
 import Tiled3dModelBucket from '../data/bucket/tiled_3d_model_bucket';
 import {OverscaledTileID} from '../../src/source/tile_id';
-import {load3DTile} from '../util/loaders';
+import {load3DTile, waitForMeshopt} from '../util/loaders';
 import EvaluationParameters from '../../src/style/evaluation_parameters';
 import {makeFQID} from "../../src/util/fqid";
 
@@ -35,7 +35,7 @@ class Tiled3dWorkerTile {
     source: string;
     overscaling: number;
     projection: Projection;
-    status: 'parsing' | 'done';
+    status!: 'parsing' | 'done';
     reloadCallback: WorkerSourceVectorTileCallback | null | undefined;
     brightness: number | null | undefined;
     worldview: string | undefined;
@@ -87,8 +87,6 @@ class Tiled3dWorkerTile {
                 const nodes = process3DTile(gltf, 1.0 / tileToMeter(params.tileID.canonical));
 
                 const bucket = new Tiled3dModelBucket(family as Array<ModelStyleLayer>, nodes, tileID, hasMapboxMeshFeatures, hasMeshoptCompression, this.brightness, featureIndex, this.worldview);
-                // Upload to GPU without waiting for evaluation if we are in diffuse path
-                if (!hasMapboxMeshFeatures) bucket.needsUpload = true;
                 buckets.push(bucket);
                 // do the first evaluation in the worker to avoid stuttering
                 bucket.evaluate(layer);
@@ -137,6 +135,9 @@ class Tiled3dModelWorkerSource implements WorkerSource {
      */
     async loadTile(params: WorkerSourceTiled3dModelRequest): Promise<WorkerSourceVectorTileResult | null | undefined> {
         const uid = params.uid;
+        // Tiled 3D model tiles are meshopt-compressed, but `decodeGLTF` only discovers that after the
+        // tile has downloaded; start the decoder fetch now so it overlaps the tile fetch instead.
+        waitForMeshopt()?.catch(() => {});
         const controller = new AbortController();
         const workerTile = this.loading[uid] = new Tiled3dWorkerTile(params, this.brightness, this.worldview);
         workerTile.abort = () => controller.abort();

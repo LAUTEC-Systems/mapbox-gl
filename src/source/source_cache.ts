@@ -2,7 +2,7 @@ import assert from '../style-spec/util/assert';
 import Point from '@mapbox/point-geometry';
 import Tile from './tile';
 import {RenderSourceType} from './render_source_type';
-import RasterArrayTile from './raster_array_tile';
+import {createRasterArrayTile} from './raster_array_plugin';
 import {Event, ErrorEvent, Evented} from '../util/evented';
 import TileCache from './tile_cache';
 import {asyncAll, keysDifference, clamp} from '../util/util';
@@ -11,11 +11,13 @@ import {OverscaledTileID} from './tile_id';
 import SourceFeatureState from './source_state';
 import MercatorCoordinate, {mercatorXfromLng} from '../geo/mercator_coordinate';
 import {isHttpNotFound} from '../util/ajax';
+import LazySource from './lazy_source';
 
 import type {CanonicalTileID} from './tile_id';
 import type Context from '../gl/context';
 import type {vec3} from 'gl-matrix';
 import type {ISource, Source} from './source';
+import type RasterArrayTileSource from './raster_array_tile_source';
 import type {SourceSpecification} from '../style-spec/types';
 import type {Map as MapboxMap} from '../ui/map';
 import type Transform from '../geo/transform';
@@ -25,6 +27,7 @@ import type {FeatureState} from '../style-spec/expression/index';
 import type {QueryGeometry, TilespaceQueryGeometry} from '../style/query_geometry';
 import type {StringifiedImageId} from '../style-spec/expression/types/image_id';
 import type {LoadVectorTileResult} from './load_vector_tile';
+import type RasterArrayTile from './raster_array_tile';
 
 /**
  * `SourceCache` is responsible for
@@ -39,11 +42,11 @@ import type {LoadVectorTileResult} from './load_vector_tile';
  */
 class SourceCache extends Evented {
     id: string;
-    map: MapboxMap;
+    map!: MapboxMap;
 
-    _source: ISource;
-    _sourceLoaded: boolean;
-    _sourceErrored: boolean;
+    _source!: ISource;
+    _sourceLoaded!: boolean;
+    _sourceErrored!: boolean;
     _tiles: Partial<Record<string | number, Tile>>;
     _prevLng: number | undefined;
     _cache: TileCache;
@@ -51,15 +54,15 @@ class SourceCache extends Evented {
     _cacheTimers: Partial<Record<number, number>>;
     _minTileCacheSize?: number;
     _maxTileCacheSize?: number;
-    _paused: boolean;
+    _paused!: boolean;
     _isRaster: boolean;
     _supportsFading: boolean;
     _isRasterElevatedOverTerrain: boolean;
-    _shouldReloadOnResume: boolean;
+    _shouldReloadOnResume!: boolean;
     _coveredTiles: Partial<Record<number | string, boolean>>;
-    transform: Transform;
-    used: boolean;
-    usedForTerrain: boolean;
+    transform!: Transform;
+    used!: boolean;
+    usedForTerrain!: boolean;
     castsShadows: boolean;
     tileCoverLift: number;
     _state: SourceFeatureState;
@@ -79,27 +82,7 @@ class SourceCache extends Evented {
         this._renderSourceType = renderSourceType;
         this._maxzoomOverride = null;
 
-        source.on('data', (e: {dataType?: string; sourceDataType?: string}) => {
-            // this._sourceLoaded signifies that the TileJSON is loaded if applicable.
-            // if the source type does not come with a TileJSON, the flag signifies the
-            // source data has loaded (in other words, GeoJSON has been tiled on the worker and is ready)
-            if (e.dataType === 'source' && e.sourceDataType === 'metadata') this._sourceLoaded = true;
-
-            // for sources with mutable data, this event fires when the underlying data
-            // to a source is changed (for example, using [GeoJSONSource#setData](https://docs.mapbox.com/mapbox-gl-js/api/sources/#geojsonsource#setdata) or [ImageSource#setCoordinates](https://docs.mapbox.com/mapbox-gl-js/api/sources/#imagesource#setcoordinates))
-            if (this._sourceLoaded && !this._paused && e.dataType === "source" && e.sourceDataType === 'content') {
-                this.reload();
-                if (this.transform) {
-                    this.update(this.transform);
-                }
-            }
-        });
-
-        source.on('error', () => {
-            this._sourceErrored = true;
-        });
-
-        this._source = source;
+        this.setSource(source);
         this._tiles = {};
 
         this._cache = new TileCache(0, this._unloadTile.bind(this));
@@ -140,12 +123,48 @@ class SourceCache extends Evented {
     }
 
     /**
+     * Set the source backing this cache and subscribe to its lifecycle events. Called at
+     * construction, and again when a lazily-loaded module replaces a {@link LazySource}
+     * placeholder with the real source — keeping the `SourceCache` identity stable. Such an
+     * upgrade is only valid from a placeholder of the same source `type` (so the raster/fading
+     * flags derived at construction still hold); the real source's `onAdd` (which begins
+     * loading) is the caller's responsibility, mirroring the normal `addSource` flow.
+     * @private
+     */
+    setSource(source: ISource) {
+        source.on('data', (e: {dataType?: string; sourceDataType?: string}) => {
+            // this._sourceLoaded signifies that the TileJSON is loaded if applicable.
+            // if the source type does not come with a TileJSON, the flag signifies the
+            // source data has loaded (in other words, GeoJSON has been tiled on the worker and is ready)
+            if (e.dataType === 'source' && e.sourceDataType === 'metadata') this._sourceLoaded = true;
+
+            // for sources with mutable data, this event fires when the underlying data
+            // to a source is changed (for example, using [GeoJSONSource#setData](https://docs.mapbox.com/mapbox-gl-js/api/sources/#geojsonsource#setdata) or [ImageSource#setCoordinates](https://docs.mapbox.com/mapbox-gl-js/api/sources/#imagesource#setcoordinates))
+            if (this._sourceLoaded && !this._paused && e.dataType === "source" && e.sourceDataType === 'content') {
+                this.reload();
+                if (this.transform) {
+                    this.update(this.transform);
+                }
+            }
+        });
+
+        source.on('error', () => {
+            this._sourceErrored = true;
+        });
+
+        this._source = source;
+    }
+
+    /**
      * Return true if no tile data is pending, tiles will not change unless
      * an additional API call is received.
      * @private
      */
     loaded(): boolean {
         if (this._sourceErrored) { return true; }
+        // A placeholder whose module load is still deferred never fires `metadata`, but it has
+        // nothing pending either, so let it report as loaded and not block `Style#loaded`.
+        if (this._source instanceof LazySource) { return this._source.loaded(); }
         if (!this._sourceLoaded) { return false; }
         if (!this._source.loaded()) { return false; }
         for (const t in this._tiles) {
@@ -398,6 +417,7 @@ class SourceCache extends Evented {
         maxCoveringZoom: number,
         retain: Partial<Record<number | string, OverscaledTileID>>
     ) {
+        const isRasterArray = this._source.type === 'raster-array';
         for (const id in this._tiles) {
             let tile = this._tiles[id];
 
@@ -407,6 +427,14 @@ class SourceCache extends Evented {
                 tile.tileID.overscaledZ <= zoom ||
                 tile.tileID.overscaledZ > maxCoveringZoom
             ) continue;
+
+            // Client-side overzoomed raster-array tiles are synthetic crops of
+            // a lower-zoom parent — not authoritative data at their zoom. If
+            // we retain them as "loaded children" of a missing lower-zoom
+            // ideal tile, the renderer keeps painting them on top of the new
+            // ideal tile after the user zooms out, doubling raster-particle
+            // density and causing ghosting.
+            if (isRasterArray && (tile as RasterArrayTile).parentTile) continue;
 
             // loop through parents and retain the topmost loaded one if found
             let topmostLoadedID = tile.tileID;
@@ -428,6 +456,8 @@ class SourceCache extends Evented {
                 if (idealTiles[tileID.key]) {
                     // found a parent that needed a loaded child; retain that child
                     retain[topmostLoadedID.key] = topmostLoadedID;
+                    const standIn = this._tiles[topmostLoadedID.key];
+                    if (standIn) standIn.dashIdealZ = tileID.overscaledZ;
                     break;
                 }
             }
@@ -674,6 +704,13 @@ class SourceCache extends Evented {
             }
         }
 
+        // Reset dash stand-in anchoring; _updateRetainedTiles marks retained
+        // parents/children with the ideal overscaledZ they substitute for.
+        for (const id in this._tiles) {
+            const tile = this._tiles[id];
+            tile.dashIdealZ = tile.tileID.overscaledZ;
+        }
+
         // Retain is a list of tiles that we shouldn't delete, even if they are not
         // the most ideal tile for the current viewport. This may include tiles like
         // parent or child tiles that are *already* loaded.
@@ -792,6 +829,15 @@ class SourceCache extends Evented {
         // retain any loaded children of ideal tiles up to maxCoveringZoom
         this._retainLoadedChildren(missingTiles, minZoom, maxCoveringZoom, retain);
 
+        // Retain parent tiles that client-side overzoomed raster-array tiles depend on.
+        if (this._source.type === 'raster-array') {
+            const rasterArraySource = this._source as RasterArrayTileSource;
+            const tiles = this._tiles as Partial<Record<string | number, RasterArrayTile>>;
+            for (const id of rasterArraySource.collectOverzoomParentTileIDs(tiles, idealTileIDs)) {
+                retain[id.key] = id;
+            }
+        }
+
         for (const tileID of idealTileIDs) {
             let tile = this._tiles[tileID.key];
 
@@ -806,6 +852,7 @@ class SourceCache extends Evented {
                 const childTile = this.getTile(childCoord);
                 if (!!childTile && childTile.hasData()) {
                     retain[childCoord.key] = childCoord;
+                    childTile.dashIdealZ = tileID.overscaledZ;
                     continue; // tile is covered by overzoomed child
                 }
             } else {
@@ -838,6 +885,7 @@ class SourceCache extends Evented {
                 }
                 if (tile) {
                     retain[parentId.key] = parentId;
+                    tile.dashIdealZ = tileID.overscaledZ;
                     // Save the current values, since they're the parent of the next iteration
                     // of the parent tile ascent loop.
                     parentWasRequested = tile.wasRequested();
@@ -911,6 +959,9 @@ class SourceCache extends Evented {
                 delete this._cacheTimers[tileID.key];
                 this._setTileReloadTimer(tileID.key, tile);
             }
+            // The tile was out of the render set while cached, so new placement has not seen it and
+            // its symbols' visibility has gone stale (see Tile#resetPlacementVisibility).
+            tile.resetPlacementVisibility();
         }
 
         const cached = Boolean(tile);
@@ -920,7 +971,7 @@ class SourceCache extends Evented {
             const isRasterArray = this._source.type === 'raster-array';
 
             tile = isRasterArray ?
-                new RasterArrayTile(tileID, size, this.transform.tileZoom, painter, this._isRaster) :
+                createRasterArrayTile(tileID, size, this.transform.tileZoom, painter, this._isRaster) :
                 new Tile(tileID, size, this.transform.tileZoom, painter, this._isRaster, this._source.worldview);
 
             this._loadTile(tile, this._tileLoaded.bind(this, tile, tileID.key, tile.state));

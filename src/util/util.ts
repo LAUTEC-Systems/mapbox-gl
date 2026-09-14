@@ -260,7 +260,7 @@ export function asyncAll<Item, Result>(
     if (!array.length) { return callback(null, []); }
     let remaining = array.length;
     const results = new Array(array.length);
-    let error = null;
+    let error: Error | null | undefined = null;
     array.forEach((item, i) => {
         fn(item, (err, result) => {
             if (err) error = err;
@@ -454,7 +454,9 @@ export function filterObject<T extends Record<PropertyKey, unknown>>(
  */
 export function clone<T>(input: T): T {
     if (Array.isArray(input)) {
-        return input.map(clone) as T;
+        const output = new Array<unknown>(input.length);
+        for (let i = 0; i < input.length; i++) output[i] = clone<unknown>(input[i]);
+        return output as T;
     } else if (typeof input === 'object' && input) {
         return mapObject(input as Record<PropertyKey, unknown>, clone) as T;
     } else {

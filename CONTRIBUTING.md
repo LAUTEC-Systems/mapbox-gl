@@ -70,7 +70,7 @@ Install node module dependencies
 npm install
 ```
 
-## Serving the Debug Page
+## Serving the Debug Pages
 
 Start the debug server
 
@@ -78,7 +78,53 @@ Start the debug server
 MAPBOX_ACCESS_TOKEN={YOUR_MAPBOX_ACCESS_TOKEN} npm start
 ```
 
-Open the debug page at [http://localhost:9966/debug/](http://localhost:9966/debug/)
+Open the catalog of debug pages at [http://localhost:9966/debug/](http://localhost:9966/debug/)
+
+The catalog is generated on request from the `description` and `mapbox:*` meta tags each page
+declares, so a page you add or annotate shows up on reload. It is not a committed file. To write
+it out for serving `debug/` some other way:
+
+```bash
+npm run generate-debug-index
+```
+
+## Adding a Debug Page
+
+Every page under `debug/` declares what it is for, so the catalog can list it. The catalog is what keeps the folder discoverable and reviewable.
+
+Add the following to the page's `<head>`. CI fails if either required tag is missing or malformed:
+- `description`: One sentence about what the page shows and when you would reach for it. Describe purpose, not mechanism.
+- `mapbox:role`: What kind of page it is. Each role becomes a section in the catalog.
+- `mapbox:in-release-testing` (optional): Records that the page is loaded by `test/release/index.js`. That file is the authoritative list, so add the page there first.
+- `mapbox:issue` (optional): Link to the GitHub issue, if there is one.
+
+| role | the page is |
+|---|---|
+| `tool` | an instrument you open to debug or to get a job done: a stats or log readout, a test harness, a local-vs-released comparison, a deliberately blank starting point |
+| `feature` | a demonstration of a documented API, style property or behavior |
+| `env` | a page about build artifacts or host-environment integration |
+| `perf` | a throughput or stress page, read by eye |
+| `repro` | a page tied to one issue |
+
+```html
+<meta name="description" content="`map.getBounds()` drawn back onto the map as a polygon and refreshed on `rotateend` — where bounds go wrong under pitch and terrain.">
+<meta name="mapbox:role" content="feature">
+<meta name="mapbox:in-release-testing" content="true">
+```
+
+And for a repro page:
+
+```html
+<meta name="mapbox:issue" content="https://github.com/mapbox/mapbox-gl-js/issues/7517">
+```
+
+### Notes
+- Filenames are kebab-case: `camera-for-bounds.html`, not `cameraForBounds.html` or
+`camera_for_bounds.html`.
+- Name repro pages after the issue number and put them under `debug/repro/`. Add tests too, so the
+page can be retired once the fix is verified.
+- Consider whether the page really belongs in `debug/`. Do the tests already cover it? Will it still
+be interesting once your change lands? If you are unsure, leave it out.
 
 ## Creating a Standalone Build
 
@@ -154,7 +200,9 @@ flowchart TB
 
 ## Changelog Conventions
 
-`CHANGELOG.md` is a valuable document many people read. It contains a formatted, lightly editorialized history of changes in the project. Pull requests are the unit of change and are normally categorized and summarized when reviewed. The changelog is manually curated from the list of commits that go into a release.
+`CHANGELOG.md` is a valuable document many people read. It contains a formatted, lightly editorialized history of changes in the project. Pull requests are the unit of change and are normally categorized and summarized when reviewed. The `Unreleased` section is updated in each pull request and curated during release preparation.
+
+Every pull request must either add a top-level bullet to the `Unreleased` section of `CHANGELOG.md` or have the `skip_gl_js_changelog` label. The repo-wide `skip changelog` label also bypasses the check. CI enforces this requirement.
 
 What warrants a changelog entry?
 
@@ -164,7 +212,7 @@ What warrants a changelog entry?
 - Any documentation related changes *should not* have a changelog entry
 - Any regression change introduced and fixed within the same release *should not* have a changelog entry
 - Any internal refactoring, technical debt reduction, render test, unit test or benchmark related change *should not* have a changelog entry
-- Any PR labeled `skip changelog` *should not* have a changelog entry
+- Any PR labeled `skip_gl_js_changelog` or `skip changelog` *should not* have a changelog entry
 
 A changelog entry should:
 

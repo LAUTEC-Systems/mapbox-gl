@@ -1,8 +1,7 @@
 /* eslint-disable camelcase, @stylistic/brace-style */
 
+import {PbfReader} from "pbf";
 import Color from "../../style-spec/util/color";
-
-import type {PbfReader} from "pbf";
 
 const defaultColor = new Color(0, 0, 0);
 
@@ -73,29 +72,41 @@ export interface IconSet {
     icons: Icon[];
 }
 
-export function readIconSet(pbf: PbfReader, end?: number): IconSet {
+/**
+ * Reads the icon set lazily without the actual drawings,
+ * which could be decoded later on the first rasterization individually.
+ * Comparing to decoding the whole tree, this saves unnecessary work; normally we only need ~10-20% of the icons.
+ */
+export function readIconSetLazy(pbf: PbfReader, end?: number): IconSet {
     const obj: IconSet = {icons: []};
     let field: number;
     while ((field = pbf.nextField(end))) {
-        if (field === 1) obj.icons.push(readIcon(pbf, pbf.readVarint() + pbf.pos));
+        if (field === 1) obj.icons.push(readIconLazy(pbf, pbf.readVarint() + pbf.pos));
     }
     return obj;
 }
 
-export function buildStretchedAreas(metadata: {stretch_x?: number[]; stretch_y?: number[]}, axis: "x" | "y"): void {
+type StretchMetadata = {
+    stretch_x?: number[] | null;
+    stretch_x_areas?: [number, number][] | null;
+    stretch_y?: number[] | null;
+    stretch_y_areas?: [number, number][] | null;
+};
+
+export function buildStretchedAreas(metadata: StretchMetadata, axis: "x" | "y"): void {
     const areas: Array<[number, number]> = [];
-    const stretch = metadata[`stretch_${axis}`];
+    const stretch = metadata[`stretch_${axis}`]!;
     let left: number | null = null;
 
     for (let i = 0; i < stretch.length; i++) {
         if (left === null) {
             if (areas.length === 0) {
-                left = stretch[0];
+                left = stretch[0]!;
             } else {
-                left = areas.at(-1)[1] + stretch[i];
+                left = areas.at(-1)![1] + stretch[i]!;
             }
         } else {
-            const right = left + stretch[i];
+            const right = left + stretch[i]!;
             areas.push([left, right]);
             left = null;
         }
@@ -105,8 +116,8 @@ export function buildStretchedAreas(metadata: {stretch_x?: number[]; stretch_y?:
 }
 
 export function postProcessIcon(icon: Icon): Icon {
-    if (!icon.usvg_tree.height) {
-        icon.usvg_tree.height = icon.usvg_tree.width;
+    if (!icon.usvg_tree!.height) {
+        icon.usvg_tree!.height = icon.usvg_tree!.width;
     }
 
     if (!icon.metadata) {
@@ -118,33 +129,21 @@ export function postProcessIcon(icon: Icon): Icon {
     if (metadata.content_area) {
         const {content_area: contentArea} = metadata;
 
-        if (contentArea.left == null) {
-            contentArea.left = 0;
-        }
+        contentArea.left ??= 0;
 
-        if (contentArea.top == null) {
-            contentArea.top = contentArea.left;
-        }
+        contentArea.top ??= contentArea.left;
 
-        if (contentArea.width == null) {
-            contentArea.width = icon.usvg_tree.width;
-        }
+        contentArea.width ??= icon.usvg_tree!.width;
 
-        if (contentArea.height == null) {
-            contentArea.height = contentArea.width;
-        }
+        contentArea.height ??= contentArea.width;
     }
 
     if (metadata.text_placeholder) {
         const {text_placeholder: textPlaceholder} = metadata;
 
-        if (textPlaceholder.top == null) {
-            textPlaceholder.top = textPlaceholder.left;
-        }
+        textPlaceholder.top ??= textPlaceholder.left;
 
-        if (textPlaceholder.height == null) {
-            textPlaceholder.height = textPlaceholder.width;
-        }
+        textPlaceholder.height ??= textPlaceholder.width;
     }
 
     if (metadata.stretch_x && metadata.stretch_x.length) {
@@ -162,16 +161,33 @@ export interface Icon {
     name: string;
     metadata?: IconMetadata;
     usvg_tree?: UsvgTree;
+    /**
+     * usvg tree pending to be decoded.
+     * Intermediate product from lazy parsing the icon set.
+     */
+    pending_usvg_tree?: PendingUsvgTree;
     data?: "usvg_tree";
 }
 
-export function readIcon(pbf: PbfReader, end?: number): Icon {
-    const obj: Icon = {name: undefined};
+const DEFAULT_USVG_TREE_SIZE = 20;
+
+/**
+ * Reads the width, height, and metadata of an icon without the actual drawing,
+ * which could be decoded on its first rasterization.
+ */
+function readIconLazy(pbf: PbfReader, end?: number): Icon {
+    const obj: Icon = {name: undefined!};
     let field: number;
     while ((field = pbf.nextField(end))) {
         if (field === 1) obj.name = pbf.readString();
         else if (field === 2) obj.metadata = readIconMetadata(pbf, pbf.readVarint() + pbf.pos);
-        else if (field === 3) { obj.usvg_tree = readUsvgTree(pbf, pbf.readVarint() + pbf.pos); obj.data = "usvg_tree"; }
+        else if (field === 3) {
+            const treeEnd = pbf.readVarint() + pbf.pos;
+            const treeStart = pbf.pos;
+            obj.usvg_tree = readUsvgTree(pbf, treeEnd, true);
+            obj.data = "usvg_tree";
+            obj.pending_usvg_tree = {buf: pbf.buf, start: treeStart, end: treeEnd};
+        }
     }
     return postProcessIcon(obj);
 }
@@ -231,7 +247,7 @@ export interface Variable {
 }
 
 export function readVariable(pbf: PbfReader, end?: number): Variable {
-    const obj: Variable = {name: undefined};
+    const obj: Variable = {name: undefined!};
     let field: number;
     while ((field = pbf.nextField(end))) {
         if (field === 1) obj.name = pbf.readString();
@@ -250,12 +266,41 @@ export interface UsvgTree {
     masks: Mask[];
 }
 
-export function readUsvgTree(pbf: PbfReader, end?: number): UsvgTree {
-    const obj = {width: 20, children: [], linear_gradients: [], radial_gradients: [], clip_paths: [], masks: [], height: 20} as UsvgTree;
+interface PendingUsvgTree {
+    buf: Uint8Array;
+    start: number;
+    end: number;
+}
+
+/**
+ * Decodes pending usvg tree from lazy loading.
+ */
+export function decodePendingUsvgTree(icon: Icon) {
+    const pendingTree = icon.pending_usvg_tree;
+    if (!pendingTree) return;
+
+    delete icon.pending_usvg_tree;
+    const pbf = new PbfReader(pendingTree.buf);
+    pbf.pos = pendingTree.start;
+    icon.usvg_tree = readUsvgTree(pbf, pendingTree.end);
+}
+
+function readUsvgTree(pbf: PbfReader, end?: number, lazy?: boolean): UsvgTree {
+    const obj: UsvgTree = {
+        width: DEFAULT_USVG_TREE_SIZE,
+        children: [],
+        linear_gradients: [],
+        radial_gradients: [],
+        clip_paths: [],
+        masks: [],
+        height: DEFAULT_USVG_TREE_SIZE
+    };
     let field: number;
     while ((field = pbf.nextField(end))) {
         if (field === 1) obj.width = obj.height = pbf.readVarint();
         else if (field === 2) obj.height = pbf.readVarint();
+        // The drawing is decoded on demand; nextField skips over the values we don't read
+        else if (lazy) continue;
         else if (field === 3) obj.children.push(readNode(pbf, pbf.readVarint() + pbf.pos));
         else if (field === 4) obj.linear_gradients.push(readLinearGradient(pbf, pbf.readVarint() + pbf.pos));
         else if (field === 5) obj.radial_gradients.push(readRadialGradient(pbf, pbf.readVarint() + pbf.pos));
@@ -517,13 +562,9 @@ export function readMask(pbf: PbfReader, end?: number): Mask {
         else if (field === 7) mask.children.push(readNode(pbf, pbf.readVarint() + pbf.pos));
     }
 
-    if (mask.height == null) {
-        mask.height = mask.width;
-    }
+    mask.height ??= mask.width;
 
-    if (mask.top == null) {
-        mask.top = mask.left;
-    }
+    mask.top ??= mask.left;
 
     return mask;
 }

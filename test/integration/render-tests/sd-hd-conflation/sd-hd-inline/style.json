@@ -1,10 +1,11 @@
 {
-  "_comment": "Single inline style (no import) with sdCoverageFadeRange=[16,16] and HD coverage source. Verifies the conflation pipeline works when SD and HD layers share one stylesheet.",
+  "description": "Single inline style (no import) with sdCoverageFadeRange=[16,16] and HD coverage source. Verifies the conflation pipeline works when SD and HD layers share one stylesheet.",
   "version": 8,
   "metadata": {
     "test": {
       "width": 1024,
       "height": 768,
+      "pixelRatio": 0.5,
       "operations": [
         [
           "wait"

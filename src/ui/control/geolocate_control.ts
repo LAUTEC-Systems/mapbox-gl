@@ -135,27 +135,27 @@ type GeolocateControlEvents = {
  * @see [Example: Locate the user](https://www.mapbox.com/mapbox-gl-js/example/locate-user/)
  */
 class GeolocateControl extends Evented<GeolocateControlEvents> implements IControl {
-    _map: Map;
+    _map!: Map;
     options: GeolocateControlOptions;
-    _container: HTMLElement;
-    _dotElement: HTMLElement;
-    _circleElement: HTMLElement;
-    _geolocateButton: HTMLButtonElement;
-    _geolocationWatchID: number;
+    _container!: HTMLElement;
+    _dotElement!: HTMLElement;
+    _circleElement!: HTMLElement;
+    _geolocateButton!: HTMLButtonElement;
+    _geolocationWatchID!: number;
     _timeoutId?: number;
     _requestTimeoutId?: number;
-    _watchState: WatchState;
+    _watchState!: WatchState;
     _lastKnownPosition?: GeolocationPosition;
-    _userLocationDotMarker: Marker;
-    _accuracyCircleMarker: Marker;
-    _accuracy: number;
-    _setup: boolean; // set to true once the control has been setup
+    _userLocationDotMarker!: Marker;
+    _accuracyCircleMarker!: Marker;
+    _accuracy!: number;
+    _setup!: boolean; // set to true once the control has been setup
     _heading?: number;
     _updateMarkerRotationThrottled?: () => number;
 
     _numberOfWatches: number;
-    _noTimeout: boolean;
-    _supportsGeolocation: boolean;
+    _noTimeout!: boolean;
+    _supportsGeolocation!: boolean;
 
     constructor(options: GeolocateControlOptions = {}) {
         super();
@@ -703,7 +703,7 @@ class GeolocateControl extends Evented<GeolocateControlEvents> implements IContr
      * geolocate.setFollowUserLocation(true);  // resume and center
      */
     setFollowUserLocation(follow?: boolean): this {
-        this.options.followUserLocation = follow != null ? follow : defaultOptions.followUserLocation;
+        this.options.followUserLocation = follow ?? defaultOptions.followUserLocation;
 
         if (this.options.trackUserLocation && this._watchState !== 'OFF') {
             if (this.options.followUserLocation) {
@@ -745,7 +745,7 @@ class GeolocateControl extends Evented<GeolocateControlEvents> implements IContr
      * geolocate.setShowAccuracyCircle(false);
      */
     setShowAccuracyCircle(show?: boolean): this {
-        this.options.showAccuracyCircle = show != null ? show : defaultOptions.showAccuracyCircle;
+        this.options.showAccuracyCircle = show ?? defaultOptions.showAccuracyCircle;
 
         if (!this._accuracyCircleMarker) return this;
 
@@ -776,7 +776,7 @@ class GeolocateControl extends Evented<GeolocateControlEvents> implements IContr
      * geolocate.setShowUserHeading(true);
      */
     setShowUserHeading(show?: boolean): this {
-        this.options.showUserHeading = show != null ? show : defaultOptions.showUserHeading;
+        this.options.showUserHeading = show ?? defaultOptions.showUserHeading;
 
         if (!this._setup) return this;
 
@@ -806,7 +806,7 @@ class GeolocateControl extends Evented<GeolocateControlEvents> implements IContr
      * geolocate.setFitBoundsOptions({maxZoom: 17, duration: 0});
      */
     setFitBoundsOptions(opts?: EasingOptions): this {
-        this.options.fitBoundsOptions = opts != null ? opts : defaultOptions.fitBoundsOptions;
+        this.options.fitBoundsOptions = opts ?? defaultOptions.fitBoundsOptions;
         return this;
     }
 
@@ -824,7 +824,7 @@ class GeolocateControl extends Evented<GeolocateControlEvents> implements IContr
      * geolocate.setShowUserLocation(true);  // show it again
      */
     setShowUserLocation(show?: boolean): this {
-        this.options.showUserLocation = show != null ? show : defaultOptions.showUserLocation;
+        this.options.showUserLocation = show ?? defaultOptions.showUserLocation;
 
         if (!this._setup) return this;
 
@@ -853,12 +853,27 @@ class GeolocateControl extends Evented<GeolocateControlEvents> implements IContr
             window.addEventListener(eventName, this._onDeviceOrientation);
         };
 
-        if (typeof (DeviceOrientationEvent as DeviceOrientationEventStatic).requestPermission === 'function') {
-            (DeviceOrientationEvent as DeviceOrientationEventStatic).requestPermission()
+        // iOS Safari, and Chrome 151+ on desktop/Android, gate device orientation
+        // behind `requestPermission()`. It must be called from the transient
+        // activation of a user gesture — which holds here because this runs
+        // synchronously inside the geolocate button's click handler (or a
+        // `setShowUserHeading(true)` call the app makes in response to one).
+        const DOE = DeviceOrientationEvent as DeviceOrientationEventStatic | undefined;
+        if (typeof DOE?.requestPermission === 'function') {
+            DOE.requestPermission()
                 .then(response => {
-                    if (response === 'granted') addListener();
+                    if (response === 'granted') {
+                        addListener();
+                    } else {
+                        // Surface the denial instead of silently showing no heading.
+                        warnOnce('GeolocateControl: permission to use device orientation was denied, so the user heading arrow will not be shown.');
+                    }
                 })
-                .catch(console.error);
+                .catch(() => {
+                    // Most commonly a missing transient activation: `requestPermission()`
+                    // must be invoked from a user gesture (e.g. a click or tap).
+                    warnOnce('GeolocateControl: could not request device orientation permission. Enable the user heading from a user gesture (click/tap) so the browser can prompt for access.');
+                });
         } else {
             addListener();
         }

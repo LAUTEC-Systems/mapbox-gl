@@ -1,6 +1,6 @@
 import StyleLayer from '../style_layer';
 import {getLayoutProperties, getPaintProperties} from './raster_style_layer_properties';
-import {renderColorRamp} from '../../util/color_ramp';
+import {type ColorRampScale, renderColorRamp} from '../../util/color_ramp';
 
 import type {Transitionable, Transitioning, PossiblyEvaluated, ConfigOptions} from '../properties';
 import type {RGBAImage} from '../../util/image';
@@ -16,13 +16,13 @@ export const COLOR_RAMP_RES = 1024;
 export const COLOR_MIX_FACTOR = (Math.pow(COLOR_RAMP_RES, 2) - 1) / (255 * COLOR_RAMP_RES * (COLOR_RAMP_RES + 3));
 
 class RasterStyleLayer extends StyleLayer {
-    override type: 'raster';
+    override type!: 'raster';
 
-    override _transitionablePaint: Transitionable<PaintProps>;
-    override _transitioningPaint: Transitioning<PaintProps>;
-    override paint: PossiblyEvaluated<PaintProps>;
+    override _transitionablePaint!: Transitionable<PaintProps>;
+    override _transitioningPaint!: Transitioning<PaintProps>;
+    override paint!: PossiblyEvaluated<PaintProps>;
 
-    colorRamp: RGBAImage;
+    colorRamp!: RGBAImage;
     colorRampTexture: Texture | null | undefined;
 
     // Cache the currently-computed range so that we can call updateColorRamp
@@ -70,7 +70,7 @@ class RasterStyleLayer extends StyleLayer {
     }
 
     override _handleSpecialPaintPropertyUpdate(name: string) {
-        if (name === 'raster-color' || name === 'raster-color-range') {
+        if (name === 'raster-color' || name === 'raster-color-range' || name === 'raster-color-scale') {
             // Force recomputation
             this._curRampRange = [NaN, NaN];
 
@@ -95,12 +95,15 @@ class RasterStyleLayer extends StyleLayer {
         if (isNaN(start) && isNaN(end)) return;
         if (start === this._curRampRange[0] && end === this._curRampRange[1]) return;
 
+        const scale = this._transitionablePaint._values['raster-color-scale'].value.expression.evaluate<undefined | ColorRampScale>({zoom: 0});
+
         this.colorRamp = renderColorRamp({
             expression,
             evaluationKey: 'rasterValue',
             image: this.colorRamp,
             clips: [{start, end}],
             resolution: COLOR_RAMP_RES,
+            scale
         });
         this.colorRampTexture = null;
         this._curRampRange = [start, end];

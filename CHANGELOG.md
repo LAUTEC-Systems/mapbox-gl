@@ -1,4 +1,118 @@
-## 3.27.0-rc.1
+## Unreleased
+
+### Features and improvements ✨
+
+- Slightly improve map load time via more aggressive chunk preloading.
+- Improve style parsing performance.
+- Preload Meshopt decoder earlier to improve 3D styles load time.
+- Improve map load time by requesting the icon set earlier and lazy parsing icons on-demand.
+- Add support for the globe to mercator transition when using the global placement.
+
+### Bug fixes 🐞
+
+- Fix `raster-array` chunk loading when unused.
+- Fix `transformRequest` headers and credentials being dropped from PMTiles requests.
+
+## 3.31.0-rc.1
+
+### Features and improvements ✨
+
+- Significantly improve GeoJSON memory footprint.
+- Reduce landmark model memory usage.
+- Remove the experimental flag from `raster-allow-draping`.
+- Add support for emissive MRT in custom layers.
+
+### Bug fixes 🐞
+
+- Fix `transformRequest` headers/credentials being dropped when loading GL model (GLTF) resources.
+- Fix `removeSource` throwing under globe projection. (h/t @mhayk)
+
+## 3.30.0
+
+### Breaking changes ⚠️
+
+- Make pitch and rotation states independent. Previously, disabling rotation also disabled pitch. Now, pitch can be enabled independently of rotation.
+
+### Features and improvements ✨
+- Extract the terrain from the core ESM module.
+- Reduce shader size by removing unused code paths.
+- Upgrade Supercluster to v9 (optimize clustering memory footprint).
+- Add support for client-side overzooming for raster-array sources.
+- Add `AnimationFrameProvider` (`MapOptions.animationFrameProvider`) to support driving the render loop from an external library.
+- Enable landmark model LOD mesh download when the server provides such data.
+- Raise the maximum number of sources in a style to 64.
+
+### Bug fixes 🐞
+- Fix dark line artifacts on non-standard procedural building geometry.
+- Fix ESM terrain module loading for elevated-lines requiring terrain.
+- Fix validation of style light transition properties.
+- Fix symbol layer related errors after GL context loss.
+- Skip rings with zero area on fill-extrusions.
+
+## 3.29.0
+
+### Breaking changes ⚠️
+
+- Remove legacy undocumented `Map` `addSourceType` API which was superceded by `CustomSourceInterface`.
+
+### Features and improvements ✨
+
+- Add new `raster-color-scale` property, which can be set to `"log"` to improve color ramp precision when visualizing long-tailed raster datasets.
+- Add new `raster-allow-draping` property that can be set to `false` to disable raster layer draping over globe/terrain.
+- Move `symbol-z-offset` property out of experimental.
+- Extend `distance` expression to accept an expression as a second argument.
+- Extend `config` expression to support object literals as values.
+- Improve dashed line rendering in pitched views.
+- Added APIs for more granular control of interaction handlers:
+	- `map.keyboard`: `disablePitch`, `enablePitch`, `isPitchEnabled`, `disableBearing`, `enableBearing`, `isBearingEnabled`, `isEnabled`
+	- `map.dragRotate`: `disableRotation`, `enableRotation`, `isRotationEnabled`
+	- `map.touchZoomRotate`: `isRotationEnabled`, `isTapDragZoomEnabled`
+	- For all three, `isEnabled` is changed from AND to OR semantics
+
+### Bug fixes 🐞
+
+- Fix rare line artifacts on sharp corners with short segments and non-bevel joins.
+- Fix ambient occlusion to not render for elevated (non-zero-base) extrusions.
+- Fix `Map` `resetFeatureStates` not working properly in some scoped styles.
+
+### Dev workflow improvements
+
+- Increase strict TypeScript coverage and added tooling to keep improving it.
+
+## 3.28.1
+
+### Bug fixes 🐞
+- Fix `iconsets` icons rendering with ESM bundle.
+
+## 3.28.0
+
+### Breaking changes ⚠️
+- Disable `text-variable-anchor` when appearances are present.
+
+### Features and improvements ✨
+- Introduce _experimental_ `map.getVerticalFieldOfView()`, `map.setVerticalFieldOfView()`, and read-only `map.getHorizontalFieldOfView()` and an animatable `fov` camera option.
+- Expose `line-border-width` and `line-border-color` as public paint properties.
+- Introduce _experimental_ `line-border-gradient` property for rendering gradient borders on lines.
+- Add support for Meshopt v1 compressed models.
+- Support string color values for the `model-color` in a model source.
+- Add `map.resetFeatureStates()` to clear all feature states for a featureset or layer.
+- Expose `map.getSchema()`/`map.setSchema()` for managing the imported style's schema.
+- Extract development and debug code from the ESM bundle into a separate module.
+- Extract more model code from the ESM core bundle.
+- Extract `raster-array` layer as a separate ESM module.
+- Reduce the bundle size by restructuring style, program, symbol, and expression code.
+- Remove experimental flag from layer appearances.
+- Improve symbol layer performance.
+- Reduce redundant repaints and checks during initial load.
+
+### Bug fixes 🐞
+- Fix double rotation of the FF5C character in vertical text rendering.
+- Preserve live gesture when camera setter is called from inside a drag/move handler.
+- Stop overwriting the `pointerEvents` of markers set by the user.
+- Fix models with vertex alpha 0 appearing black.
+- Fix incorrect rendering of fill extrusions with `fill-extrusion-edge-radius` at low zoom levels in some cases.
+
+## 3.27.0
 
 ### Features and improvements ✨
 
@@ -18,6 +132,8 @@
 - Fix `Style#{get,set,remove}FeatureState` with `{target: {layerId}}` so imported-layer targets resolve against their own fragment's sources instead of the root style's
 - Fix missing building along tile borders
 - Fix dynamic imports in UMD
+- Fix import.meta crash under modern bundlers
+- Fix `setPaintProperty` on symbol properties with a transition duration of 0
 
 ## 3.26.0
 

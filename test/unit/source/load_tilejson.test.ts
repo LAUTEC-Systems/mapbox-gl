@@ -207,7 +207,7 @@ describe('Inlined TileJSON', () => {
         await wait;
     });
 
-    test('should not request tileJSON because of unsupported language/worldview', async () => {
+    test('should request tileJSON because of unsupported language/worldview', async () => {
         const {withAsync, wait} = doneAsync();
         const requestFn = vi.fn();
         mockFetch({
@@ -235,7 +235,7 @@ describe('Inlined TileJSON', () => {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         }, map._requestManager, 'et', 'ET', withAsync((err, result, doneRef) => {
             assert.ifError(err);
-            expect(requestFn).not.toHaveBeenCalled();
+            expect(requestFn).toHaveBeenCalledOnce();
             // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             doneRef.resolve();
         }));
@@ -578,6 +578,92 @@ describe('LoadTileJson#variants', () => {
             doneRef.resolve();
         }));
 
+        await wait;
+    });
+
+    test('tiles should be replaced if capabilities[0] == "meshopt-v2+lod"', async () => {
+        const {withAsync, wait} = doneAsync();
+        const options = {url: "/source.json"};
+        const tileJSON = {
+            "tiles": ["http://dataset1"],
+            "variants": [
+                {
+                    "capabilities": ["meshopt-v2+lod"],
+                    "tiles": ["http://dataset2"]
+                }
+            ]
+        };
+        mockFetch({
+            '/source.json': () => new Response(JSON.stringify(tileJSON))
+        });
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        loadTileJSON(options, map._requestManager, null, null, withAsync((err, result, doneRef) => {
+            expect(err).toEqual(null);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(result.tiles).toEqual(["http://dataset2"]);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            doneRef.resolve();
+        }));
+        await wait;
+    });
+
+    test('"meshopt-v2+lod" variant is preferred over "meshopt" when both are present', async () => {
+        const {withAsync, wait} = doneAsync();
+        const options = {url: "/source.json"};
+        const tileJSON = {
+            "tiles": ["http://dataset1"],
+            "variants": [
+                {
+                    "capabilities": ["meshopt"],
+                    "tiles": ["http://dataset2"]
+                },
+                {
+                    "capabilities": ["meshopt-v2+lod"],
+                    "tiles": ["http://dataset3"]
+                }
+            ]
+        };
+        mockFetch({
+            '/source.json': () => new Response(JSON.stringify(tileJSON))
+        });
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        loadTileJSON(options, map._requestManager, null, null, withAsync((err, result, doneRef) => {
+            expect(err).toEqual(null);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(result.tiles).toEqual(["http://dataset3"]);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            doneRef.resolve();
+        }));
+        await wait;
+    });
+
+    test('"meshopt-v2+lod" is preferred even when "meshopt" appears first', async () => {
+        const {withAsync, wait} = doneAsync();
+        const options = {url: "/source.json"};
+        const tileJSON = {
+            "tiles": ["http://dataset1"],
+            "variants": [
+                {
+                    "capabilities": ["meshopt-v2+lod"],
+                    "tiles": ["http://dataset3"]
+                },
+                {
+                    "capabilities": ["meshopt"],
+                    "tiles": ["http://dataset2"]
+                }
+            ]
+        };
+        mockFetch({
+            '/source.json': () => new Response(JSON.stringify(tileJSON))
+        });
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        loadTileJSON(options, map._requestManager, null, null, withAsync((err, result, doneRef) => {
+            expect(err).toEqual(null);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(result.tiles).toEqual(["http://dataset3"]);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            doneRef.resolve();
+        }));
         await wait;
     });
 });

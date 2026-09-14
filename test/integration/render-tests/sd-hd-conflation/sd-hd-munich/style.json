@@ -1,10 +1,11 @@
 {
-  "_comment": "Munich at zoom 18.51 with rich HD data (road polygons, lanes, lines, points). End-to-end check that HD overlay renders correctly and SD roads are hidden under FRC coverage.",
+  "description": "Munich at zoom 18.51 with rich HD data (road polygons, lanes, lines, points). End-to-end check that HD overlay renders correctly and SD roads are hidden under FRC coverage.",
   "version": 8,
   "metadata": {
     "test": {
       "width": 1024,
       "height": 768,
+      "pixelRatio": 0.5,
       "operations": [
         [
           "wait"

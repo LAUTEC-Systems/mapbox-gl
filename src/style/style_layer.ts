@@ -4,6 +4,7 @@ import {Layout, Transitionable, PossiblyEvaluated, PossiblyEvaluatedPropertyValu
 import {supportsPropertyExpression} from '../style-spec/util/properties';
 import featureFilter from '../style-spec/feature_filter/index';
 import {makeFQID} from '../util/fqid';
+import {createRuntimeLayerUID} from '../placement/layer_uid';
 import {type FeatureState} from '../style-spec/expression/index';
 import {isStateConstant} from '../style-spec/expression/is_constant';
 import assert from '../style-spec/util/assert';
@@ -30,6 +31,8 @@ import type {DEMSampler} from '../terrain/elevation';
 import type {VectorTileFeature} from '@mapbox/vector-tile';
 import type {CreateProgramParams} from '../render/painter';
 import type SourceCache from '../source/source_cache';
+import type Tile from '../source/tile';
+import type {SymbolPlacementParameters} from '../placement/symbol_placement_parameters';
 import type Painter from '../render/painter';
 import type {LUT} from '../util/lut';
 import type {ImageId} from '../style-spec/expression/types/image_id';
@@ -38,7 +41,7 @@ import type {QueryResult} from '../source/query_features';
 
 const TRANSITION_SUFFIX = '-transition';
 
-export type RuntimeModuleType = 'HD' | 'Standard';
+export type RuntimeModuleType = 'HD' | 'Standard' | 'Lite';
 
 type LayerRenderingStats = {
     numRenderedVerticesInTransparentPass: number;
@@ -51,11 +54,12 @@ const drapedLayers = new Set(['fill', 'line', 'background', 'hillshade', 'raster
 class StyleLayer extends Evented {
     id: string;
     fqid: string;
+    readonly runtimeLayerUID: number;
     scope: string;
     lut: LUT | null;
     metadata: unknown;
     type: LayerSpecification['type'] | 'custom';
-    source: string;
+    source!: string;
     sourceLayer: string | null | undefined;
     slot: string | null | undefined;
     minzoom: number | null | undefined;
@@ -67,16 +71,16 @@ class StyleLayer extends Evented {
     appearancesVersion: number;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    _unevaluatedLayout: Layout<any>;
+    _unevaluatedLayout!: Layout<any>;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    readonly layout: PossiblyEvaluated<any>;
+    readonly layout!: PossiblyEvaluated<any>;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    _transitionablePaint: Transitionable<any>;
+    _transitionablePaint!: Transitionable<any>;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    _transitioningPaint: Transitioning<any>;
+    _transitioningPaint!: Transitioning<any>;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    readonly paint: PossiblyEvaluated<any>;
+    readonly paint!: PossiblyEvaluated<any>;
 
     _featureFilter: FeatureFilter;
     _filterCompiled: boolean;
@@ -97,6 +101,7 @@ class StyleLayer extends Evented {
 
         this.id = layer.id;
         this.fqid = makeFQID(this.id, scope);
+        this.runtimeLayerUID = createRuntimeLayerUID();
         this.type = layer.type;
         this.scope = scope;
         this.lut = lut;
@@ -114,7 +119,7 @@ class StyleLayer extends Evented {
         this.minzoom = layer.minzoom;
         this.maxzoom = layer.maxzoom;
 
-        if (layer.type && layer.type !== 'background' && layer.type !== 'sky' && layer.type !== 'slot') {
+        if (layer.type && layer.type !== 'background' && layer.type !== 'sky' && layer.type !== 'slot' && layer.type !== 'placement-group') {
             this.source = layer.source;
             this.sourceLayer = layer['source-layer'];
             this.filter = layer.filter;
@@ -151,6 +156,10 @@ class StyleLayer extends Evented {
 
     // No-op in the StyleLayer class, must be implemented by each concrete StyleLayer
     onRemove(_map: MapboxMap): void {}
+
+    // Feeds this layer's placeable symbols into the given global placement run. No-op for
+    // non-symbol layers; overridden by SymbolStyleLayer.
+    placeSymbols(_parameters: SymbolPlacementParameters, _tiles: Array<Tile>, _styleLayerOrder: number, _sourceCache: SourceCache, _checkAgainstClipLayer: boolean): void {}
 
     isDraped(_sourceCache?: SourceCache): boolean {
         return !this.is3D(true) && drapedLayers.has(this.type);

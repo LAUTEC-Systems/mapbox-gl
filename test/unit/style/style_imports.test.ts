@@ -3055,6 +3055,36 @@ describe('Style#setConfigProperty', () => {
         fragmentStyle.setFilter('circle', null);
         expect(style._layerExpressionDependencies.get(layerFqid).isConfigDependent).toBe(false);
     });
+
+    test('Accepts a bare object (no ["literal", ...] wrapper) for an object-typed option', async () => {
+        const {style} = newStubStyle();
+
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const initialStyle = createStyleJSON({
+            imports: [{
+                id: 'standard',
+                url: '/standard.json',
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+                data: createStyleJSON({
+                    schema: {
+                        geom: {
+                            type: 'object',
+                            default: {type: 'Point', coordinates: [0, 0]}
+                        }
+                    }
+                })
+            }]
+        });
+
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(initialStyle);
+        await waitFor(style, "style.load");
+
+        expect(style.getConfigProperty('standard', 'geom')).toEqual(['literal', {type: 'Point', coordinates: [0, 0]}]);
+
+        style.setConfigProperty('standard', 'geom', {type: 'Point', coordinates: [1, 1]});
+        expect(style.getConfigProperty('standard', 'geom')).toEqual(['literal', {type: 'Point', coordinates: [1, 1]}]);
+    });
 });
 
 describe('Style initial config load', () => {
@@ -3888,5 +3918,66 @@ describe('feature-state with imported layer targets', () => {
 
         expect(style.getFeatureState({source: 'shared', id: 2})).toEqual({hover: true});
         expect(fragmentStyle.getFeatureState({source: 'shared', id: 2})).toEqual({});
+    });
+
+    test('setFeatureState fires an error for a nonexistent layerId', async () => {
+        const {style} = await loadCollidingRootAndImport();
+        const spy = vi.fn();
+        style.on('error', spy);
+        style.setFeatureState({id: 1, target: {layerId: 'no-such-layer'}}, {hover: true});
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect((spy.mock.calls[0][0] as {error: Error}).error.message).toMatch(/does not exist in the map's style/);
+    });
+
+    test('removeFeatureState fires an error for a nonexistent layerId', async () => {
+        const {style} = await loadCollidingRootAndImport();
+        const spy = vi.fn();
+        style.on('error', spy);
+        style.removeFeatureState({id: 1, target: {layerId: 'no-such-layer'}});
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect((spy.mock.calls[0][0] as {error: Error}).error.message).toMatch(/does not exist in the map's style/);
+    });
+
+    test('getFeatureState fires an error for a nonexistent layerId', async () => {
+        const {style} = await loadCollidingRootAndImport();
+        const spy = vi.fn();
+        style.on('error', spy);
+        style.getFeatureState({id: 1, target: {layerId: 'no-such-layer'}});
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect((spy.mock.calls[0][0] as {error: Error}).error.message).toMatch(/does not exist in the map's style/);
+    });
+
+    test('imported-layer resetFeatureStates clears the fragment source, not the colliding root source', async () => {
+        const {style, fragmentStyle} = await loadCollidingRootAndImport();
+        const importedLayerId = makeFQID('fragment-layer', 'fragment');
+
+        fragmentStyle.setFeatureState({source: 'shared', id: 1}, {hover: true});
+        style.setFeatureState({source: 'shared', id: 1}, {hover: true});
+
+        style.resetFeatureStates({layerId: importedLayerId});
+
+        expect(fragmentStyle.getFeatureState({source: 'shared', id: 1})).toEqual({});
+        expect(style.getFeatureState({source: 'shared', id: 1})).toEqual({hover: true});
+    });
+
+    test('root-layer resetFeatureStates clears the root source only', async () => {
+        const {style, fragmentStyle} = await loadCollidingRootAndImport();
+
+        fragmentStyle.setFeatureState({source: 'shared', id: 2}, {hover: true});
+        style.setFeatureState({source: 'shared', id: 2}, {hover: true});
+
+        style.resetFeatureStates({layerId: 'root-layer'});
+
+        expect(style.getFeatureState({source: 'shared', id: 2})).toEqual({});
+        expect(fragmentStyle.getFeatureState({source: 'shared', id: 2})).toEqual({hover: true});
+    });
+
+    test('resetFeatureStates fires an error for a nonexistent layerId', async () => {
+        const {style} = await loadCollidingRootAndImport();
+        const spy = vi.fn();
+        style.on('error', spy);
+        style.resetFeatureStates({layerId: 'no-such-layer'});
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect((spy.mock.calls[0][0] as {error: Error}).error.message).toMatch(/does not exist in the map's style/);
     });
 });

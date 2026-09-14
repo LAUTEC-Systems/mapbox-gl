@@ -99,7 +99,7 @@ type LineClips = {
     end: number;
 };
 
-type GradientTexture = {
+export type GradientTexture = {
     texture: Texture;
     gradient: RGBAImage | null | undefined;
     version: number;
@@ -122,28 +122,28 @@ export interface Subsegment {
  * @private
  */
 class LineBucket implements Bucket {
-    distance: number;
-    prevDistance: number;
-    totalDistance: number;
-    totalFeatureLength: number;
+    distance!: number;
+    prevDistance!: number;
+    totalDistance!: number;
+    totalFeatureLength!: number;
     maxLineLength: number;
-    scaledDistance: number;
-    lineSoFar: number;
+    scaledDistance!: number;
+    lineSoFar!: number;
     lineClips: LineClips | null | undefined;
-    zOffsetValue: PossiblyEvaluatedValue<number>;
-    variableWidthValue: PossiblyEvaluatedValue<number>;
-    variableEmissiveStrengthValue: PossiblyEvaluatedValue<number>;
-    elevationGroundScaleValue: PossiblyEvaluatedValue<number>;
-    lineFeature: BucketFeature;
+    zOffsetValue!: PossiblyEvaluatedValue<number>;
+    variableWidthValue!: PossiblyEvaluatedValue<number>;
+    variableEmissiveStrengthValue!: PossiblyEvaluatedValue<number>;
+    elevationGroundScaleValue!: PossiblyEvaluatedValue<number>;
+    lineFeature!: BucketFeature;
 
-    e1: number;
-    e2: number;
+    e1!: number;
+    e2!: number;
 
-    patternJoinNone: boolean;
-    currentLineJoinType: string;
-    segmentStart: number;
-    segmentStartf32: number;
-    segmentPoints: Array<number>;
+    patternJoinNone!: boolean;
+    currentLineJoinType!: string;
+    segmentStart!: number;
+    segmentStartf32!: number;
+    segmentPoints!: Array<number>;
 
     index: number;
     zoom: number;
@@ -154,39 +154,42 @@ class LineBucket implements Bucket {
     gradients: {
         [key: string]: GradientTexture;
     };
-    stateDependentLayers: Array<LineStyleLayer>;
+    borderGradients: {
+        [key: string]: GradientTexture;
+    };
+    stateDependentLayers!: Array<LineStyleLayer>;
     stateDependentLayerIds: Array<string>;
     patternFeatures: Array<BucketFeature>;
     lineClipsArray: Array<LineClips>;
 
     layoutVertexArray: LineLayoutArray;
-    layoutVertexBuffer: VertexBuffer;
+    layoutVertexBuffer!: VertexBuffer;
     layoutVertexArray2: LineExtLayoutArray;
-    layoutVertexBuffer2: VertexBuffer;
+    layoutVertexBuffer2!: VertexBuffer;
     patternVertexArray: LinePatternLayoutArray;
-    patternVertexBuffer: VertexBuffer;
+    patternVertexBuffer!: VertexBuffer;
 
     zOffsetVertexArray: LineZOffsetExtArray;
-    zOffsetVertexBuffer: VertexBuffer;
+    zOffsetVertexBuffer!: VertexBuffer;
     elevationIdColVertexArray: LineElevationIdColArray;
-    elevationIdColVertexBuffer: VertexBuffer;
+    elevationIdColVertexBuffer!: VertexBuffer;
 
     elevationGroundScaleVertexArray: LineElevationGroundScaleArray;
-    elevationGroundScaleVertexBuffer: VertexBuffer;
+    elevationGroundScaleVertexBuffer!: VertexBuffer;
 
     indexArray: TriangleIndexArray;
-    indexBuffer: IndexBuffer;
+    indexBuffer!: IndexBuffer;
 
     hasPattern: boolean;
-    tileToMeter: number;
+    tileToMeter!: number;
     hasCrossSlope: boolean;
     programConfigurations: ProgramConfigurationSet<LineStyleLayer>;
     segments: SegmentVector;
     sourceLayerName: string;
-    uploaded: boolean;
+    uploaded!: boolean;
     projection: ProjectionSpecification;
     currentVertex: Point4D | null | undefined;
-    currentVertexIsOutside: boolean;
+    currentVertexIsOutside!: boolean;
     tessellationStep: number;
 
     evaluationGlobals = {'zoom': 0, 'lineProgress': undefined};
@@ -219,8 +222,10 @@ class LineBucket implements Bucket {
         this.patternFeatures = [];
         this.lineClipsArray = [];
         this.gradients = {};
+        this.borderGradients = {};
         this.layers.forEach(layer => {
             this.gradients[layer.id] = {} as GradientTexture;
+            this.borderGradients[layer.id] = {} as GradientTexture;
         });
 
         this.layoutVertexArray = new LineLayoutArray();
@@ -611,10 +616,10 @@ class LineBucket implements Bucket {
             // result in some precision issues especially with longer lines.
             if (!Number.isNaN(featureLen) && !Number.isNaN(segmentLen)) {
                 this.totalFeatureLength = featureLen;
-                this.distance = segmentLen * clipRangeScale;
+                this.totalDistance = segmentLen * clipRangeScale;
                 this.lineClips.start = range.min;
                 this.lineClips.end = range.max;
-                this.maxLineLength = Math.max(this.maxLineLength, this.distance);
+                this.maxLineLength = Math.max(this.maxLineLength, this.totalDistance);
             } else {
                 // Calculate the total distance, in tile units, of this tiled line feature
                 for (let i = 0; i < vertices.length - 1; i++) {
@@ -877,9 +882,13 @@ class LineBucket implements Bucket {
                     this.addCurrentVertex(currentVertex, endNormal ? endNormal : prevNormal, -capScale, -capScale, segment, lineProgressFeatures);
                 }
 
-                const skipStraightEdges = dist <= 2 * sharpCornerOffset && currentJoin !== 'bevel';
+                // On short segments also pull the fake-round fan anchor from the miter point back to
+                // the unit circle: scaled by the line width, the miter point can land outside the
+                // geometry and its fan paints border color across neighbouring segments.
+                const skipStraightEdges = dist <= 1.0 * sharpCornerOffset && currentJoin !== 'bevel';
+                const joinExtent = skipStraightEdges ? 1.0 : miterLength;
                 const join = joinNormal.mult(lineTurnsLeft ? 1.0 : -1.0);
-                join._mult(miterLength);
+                join._mult(joinExtent);
                 const next = nextNormal.mult(lineTurnsLeft ? -1.0 : 1.0);
                 const prev = prevNormal.mult(lineTurnsLeft ? -1.0 : 1.0);
                 const lpf = this.evaluateLineProgressFeatures(this.distance);

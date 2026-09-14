@@ -762,6 +762,20 @@ describe('Style#removeSource', () => {
         expect(sourceCache.clearTiles).toHaveBeenCalledTimes(1);
     });
 
+    test('tells the workers to discard the source', async () => {
+        const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(createStyleJSON({
+            sources: {'source-id': createGeoJSONSource()}
+        }));
+
+        await waitFor(style, "style.load");
+        vi.spyOn(style.dispatcher, 'broadcast');
+        style.removeSource('source-id');
+
+        expect(style.dispatcher.broadcast).toHaveBeenCalledWith('removeSource', {type: 'geojson', source: 'source-id', scope: ''});
+    });
+
     test('throws on non-existence', async () => {
         const style = new Style(new StubMap());
         // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
@@ -1243,6 +1257,28 @@ describe('Style#removeLayer', () => {
             });
 
         });
+    });
+
+    test('releases the removed layer\'s symbol id range', async () => {
+        const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(createStyleJSON({
+            layers: [{
+                id: 'background',
+                type: 'background'
+            }]
+        }));
+
+        await waitFor(style, 'style.load');
+
+        const layer = style._layers.background;
+        style.symbolIdRangeAllocator.allocateRange(layer.runtimeLayerUID, 5);
+
+        style.removeLayer('background');
+
+        // A re-allocation for the same runtimeLayerUID restarts from zero, proving the
+        // allocator's counter for this layer was dropped rather than left stale.
+        expect(style.symbolIdRangeAllocator.allocateRange(layer.runtimeLayerUID, 1)).toEqual(0);
     });
 
     test('fires an error on non-existence', async () => {
@@ -2470,33 +2506,6 @@ describe('Style#query*Features', () => {
     });
 });
 
-describe('Style#addSourceType', () => {
-    const _types = {'existing'() {}};
-
-    beforeEach(() => {
-        vi.spyOn(Style, 'getSourceType').mockImplementation(name => _types[name]);
-        vi.spyOn(Style, 'setSourceType').mockImplementation((name, create) => {
-            _types[name] = create;
-        });
-    });
-
-    test('adds factory function', () => {
-        const style = new Style(new StubMap());
-        const SourceType = function () {};
-
-        style.addSourceType('foo', SourceType, () => {
-            expect(_types['foo']).toEqual(SourceType);
-        });
-    });
-
-    test('refuses to add new type over existing name', () => {
-        const style = new Style(new StubMap());
-        style.addSourceType('existing', () => {}, (err) => {
-            expect(err).toBeTruthy();
-        });
-    });
-});
-
 describe('Style#hasTransitions', () => {
     test('returns false when the style is loading', () => {
         const style = new Style(new StubMap());
@@ -3290,6 +3299,52 @@ describe('Style#_updatePlacement', () => {
         // Assert placement methods STILL were not called (verifies it's not a one-time skip)
         expect(startNewPlacementSpy).not.toHaveBeenCalled();
         expect(continuePlacementSpy).not.toHaveBeenCalled();
+    });
+
+    test('skips the legacy pipeline entirely when placementAlgorithm is \'global\'', async () => {
+        const map = new StubMap();
+        // @ts-expect-error - painter is not part of StubMap but required for _updatePlacement
+        map.painter = {scaleFactor: 1};
+        const replacementSource = {updateTime: 0};
+
+        const style = new Style(map);
+        style.loadJSON({
+            "version": 8,
+            "sources": {
+                "geojson": {
+                    "type": "geojson",
+                    "data": {"type": "FeatureCollection", "features": []}
+                }
+            },
+            "layers": [{
+                "id": "symbol",
+                "type": "symbol",
+                "source": "geojson"
+            }]
+        });
+
+        await waitFor(style, 'style.load');
+
+        const tr = map.transform;
+        tr.resize(512, 512);
+
+        style.update({zoom: tr.zoom, fadeDuration: 0});
+
+        const addLayerSpy = vi.spyOn(style.crossTileSymbolIndex, 'addLayer');
+        const placeSymbolsSpy = vi.spyOn(style.getLayer('symbol'), 'placeSymbols');
+
+        const result = style._updatePlacement(tr, false, 0, false, replacementSource, 'global');
+
+        // The legacy CrossTileSymbolIndex/Placement pipeline never runs...
+        expect(addLayerSpy).not.toHaveBeenCalled();
+        // ...yet a valid (empty) placement is still produced, so the render path's
+        // unconditional reads of style.placement don't crash.
+        expect(style.pauseablePlacement.isDone()).toBeTruthy();
+        expect(style.placement).toBeTruthy();
+        expect(result).toBeFalsy();
+
+        expect(style.globalPlacement).toBeTruthy();
+        expect(placeSymbolsSpy).toHaveBeenCalledTimes(1);
     });
 
     test('returns true when symbol layer is added after load due to symbolBucketsChanged', async () => {

@@ -1,0 +1,71 @@
+{
+  "description": "Verifies client-side MRT overzooming: only the z=2 fixture tile (2-3-1-synthetic.mrt) exists, camera renders at z=5, so every visible tile is served by cropping the z=2 parent. This uses a synthetic MRT fixture (a smooth diagonal gradient, PIXEL_FORMAT_UINT32, offset=0/scale=1e-5) rather than the real-world raster-array/default fixture: the real fixture's offset=-100000 makes the raster-array color-ramp shader's colorOffset/colorMix uniforms exceed safe float precision range on some GPUs (observed: Adreno GLES + Vulkan), independent of and unrelated to the overzoom logic itself. The synthetic data keeps those uniforms small so this test can isolate and verify overzoom-crop spatial correctness without tripping that separate, pre-existing precision issue.",
+  "version": 8,
+  "metadata": {
+    "test": {
+      "width": 256,
+      "height": 256,
+      "allowed": 0.001,
+      "ignore-metrics": [
+        {"platform-tag-contains": "native-linux-gl", "reason": "flaky GFX metrics on Linux GL"}
+      ],
+      "operations": [["wait"]]
+    }
+  },
+  "center": [135.0053045734985, 36.00653610439714],
+  "zoom": 5,
+  "transition": {"duration": 0},
+  "sources": {
+    "satellite": {
+      "type": "raster",
+      "tiles": ["local://tiles/{z}-{x}-{y}.satellite.png"],
+      "maxzoom": 17,
+      "tileSize": 256
+    },
+    "precipitations": {
+      "type": "raster-array",
+      "tiles": ["local://tiles/{z}-{x}-{y}-synthetic.mrt"],
+      "raster_layers": [
+        {
+          "fields": {
+            "range": [0, 1],
+            "tilesize": 64,
+            "buffer": 1,
+            "bands": ["1708304400"]
+          },
+          "id": "Total Precip"
+        }
+      ]
+    }
+  },
+  "layers": [
+    {
+      "id": "satellite",
+      "type": "raster",
+      "source": "satellite",
+      "paint": {"raster-fade-duration": 0}
+    },
+    {
+      "id": "precipitations",
+      "source": "precipitations",
+      "source-layer": "Total Precip",
+      "type": "raster",
+      "slot": "top",
+      "paint": {
+        "raster-opacity": 0.75,
+        "raster-resampling": "linear",
+        "raster-fade-duration": 0,
+        "raster-color-range": [0, 1],
+        "raster-color-range-transition": {"duration": 0},
+        "raster-color": [
+          "interpolate",
+          ["linear"],
+          ["raster-value"],
+          0, "rgba(255,0,0,1)",
+          0.5, "rgba(0,255,0,1)",
+          1, "rgba(0,0,255,1)"
+        ]
+      }
+    }
+  ]
+}

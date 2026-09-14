@@ -366,7 +366,7 @@ export type SchemaSpecification = {
 
 export type OptionSpecification = {
     "default": unknown | ExpressionSpecification,
-    "type"?: "string" | "number" | "boolean" | "color",
+    "type"?: "string" | "number" | "boolean" | "color" | "object",
     "array"?: boolean,
     "minValue"?: number,
     "maxValue"?: number,
@@ -757,6 +757,11 @@ export type LineLayerSpecification = {
         "line-border-color"?: DataDrivenPropertyValueSpecification<ColorSpecification>,
         "line-border-color-transition"?: TransitionSpecification,
         "line-border-color-use-theme"?: PropertyValueSpecification<string>,
+        /**
+         * @experimental This property is experimental and subject to change in future versions.
+         */
+        "line-border-gradient"?: ColorSpecification | ExpressionSpecification,
+        "line-border-gradient-use-theme"?: PropertyValueSpecification<string>,
         "line-occlusion-opacity"?: PropertyValueSpecification<number>,
         "line-occlusion-opacity-transition"?: TransitionSpecification,
         /**
@@ -766,7 +771,12 @@ export type LineLayerSpecification = {
         /**
          * @experimental This property is experimental and subject to change in future versions.
          */
-        "line-blend-additive-clamp"?: PropertyValueSpecification<number>
+        "line-blend-additive-clamp"?: PropertyValueSpecification<number>,
+        /**
+         * @experimental This property is experimental and subject to change in future versions.
+         */
+        "line-cutout-depth"?: PropertyValueSpecification<number>,
+        "line-cutout-depth-transition"?: TransitionSpecification
     },
     "appearances"?: Array<AppearanceSpecification>
 };
@@ -893,11 +903,16 @@ export type SymbolLayerSpecification = {
         "icon-color-contrast"?: number | ExpressionSpecification,
         "icon-color-brightness-min"?: number | ExpressionSpecification,
         "icon-color-brightness-max"?: number | ExpressionSpecification,
+        "symbol-z-offset"?: DataDrivenPropertyValueSpecification<number>,
+        "symbol-z-offset-transition"?: TransitionSpecification,
         /**
          * @experimental This property is experimental and subject to change in future versions.
          */
-        "symbol-z-offset"?: DataDrivenPropertyValueSpecification<number>,
-        "symbol-z-offset-transition"?: TransitionSpecification
+        "placement-priority"?: DataDrivenPropertyValueSpecification<number>,
+        /**
+         * @experimental This property is experimental and subject to change in future versions.
+         */
+        "placement-group"?: DataDrivenPropertyValueSpecification<string>
     },
     "appearances"?: Array<AppearanceSpecification>
 };
@@ -1257,6 +1272,10 @@ export type RasterLayerSpecification = {
         "raster-color-mix-transition"?: TransitionSpecification,
         "raster-color-range"?: PropertyValueSpecification<[number, number]>,
         "raster-color-range-transition"?: TransitionSpecification,
+        /**
+         * @experimental This property is experimental and subject to change in future versions.
+         */
+        "raster-color-scale"?: "linear" | "log" | ExpressionSpecification,
         "raster-hue-rotate"?: PropertyValueSpecification<number>,
         "raster-hue-rotate-transition"?: TransitionSpecification,
         "raster-brightness-min"?: PropertyValueSpecification<number>,
@@ -1541,6 +1560,21 @@ export type SlotLayerSpecification = {
     "paint"?: never
 };
 
+export type PlacementGroupLayerSpecification = {
+    "id": string,
+    "type": "placement-group",
+    "metadata"?: unknown,
+    "source"?: never,
+    "source-layer"?: never,
+    "slot"?: string,
+    "minzoom"?: never,
+    "maxzoom"?: never,
+    "filter"?: never,
+    "appearances"?: Array<AppearanceSpecification>,
+    "layout"?: never,
+    "paint"?: never
+};
+
 export type ClipLayerSpecification = {
     "id": string,
     "type": "clip",
@@ -1581,6 +1615,7 @@ export type LayerSpecification =
     | BackgroundLayerSpecification
     | SkyLayerSpecification
     | SlotLayerSpecification
+    | PlacementGroupLayerSpecification
     | ClipLayerSpecification;
 
 export type LayoutSpecification = UnionToIntersection<NonNullable<LayerSpecification['layout']>>;
@@ -1685,6 +1720,11 @@ export type SkyLayer = SkyLayerSpecification;
  * @deprecated Use `SlotLayerSpecification` instead.
  */
 export type SlotLayer = SlotLayerSpecification;
+
+/**
+ * @deprecated Use `PlacementGroupLayerSpecification` instead.
+ */
+export type PlacementGroupLayer = PlacementGroupLayerSpecification;
 
 /**
  * @deprecated Use `ClipLayerSpecification` instead.

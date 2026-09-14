@@ -50,10 +50,10 @@ type ModelSourceModelInfo = {
 class ModelSource extends Evented<SourceEvents> implements ISource {
     type: 'model';
     id: string;
-    scope: string;
-    minzoom: number;
-    maxzoom: number;
-    tileSize: number;
+    scope!: string;
+    minzoom!: number;
+    maxzoom!: number;
+    tileSize!: number;
     minTileCacheSize?: number;
     maxTileCacheSize?: number;
     roundZoom: boolean | undefined;
@@ -65,8 +65,8 @@ class ModelSource extends Evented<SourceEvents> implements ISource {
     vectorLayerIds?: never;
     rasterLayers?: never;
     rasterLayerIds?: never;
-    map: MapboxMap;
-    uri: string;
+    map!: MapboxMap;
+    uri!: string;
     models: Array<Model>;
     _options: ModelSourceSpecification;
     _abortController: AbortController | null;
@@ -101,7 +101,7 @@ class ModelSource extends Evented<SourceEvents> implements ISource {
 
     private async loadGLTFFromURI(uri: string, signal?: AbortSignal): Promise<GLTF> {
         const request = await this.map._requestManager.transformRequest(uri, ResourceType.Model, signal);
-        return loadGLTF(request.url, signal);
+        return loadGLTF(request, signal);
     }
 
     private async loadModel(modelId: string, modelSpec: ModelSourceModelSpecification, signal: AbortSignal): Promise<void> {
@@ -142,7 +142,7 @@ class ModelSource extends Evented<SourceEvents> implements ISource {
                 existingInfo.modelSpec = modelSpec;
                 const model = existingInfo.model;
                 model.position = modelSpec.position != null ? new LngLat(modelSpec.position[0], modelSpec.position[1]) : new LngLat(0, 0);
-                model.orientation = modelSpec.orientation != null ? modelSpec.orientation : [0, 0, 0];
+                model.orientation = modelSpec.orientation ?? [0, 0, 0];
                 ModelSource.applyModelSpecification(model, modelSpec);
                 model.computeBoundsAndApplyParent();
                 this.models.push(model);
@@ -261,7 +261,7 @@ class ModelSource extends Evented<SourceEvents> implements ISource {
         }
         Object.entries(overrides).forEach(([key, value]) => {
 
-            const modelColor = value['model-color'] as number[];
+            const modelColor = ModelSource.arrayFromColorSpecification(value['model-color'] as ColorSpecification | undefined);
             const materialOverride: MaterialOverride = {
                 color: modelColor !== undefined ? new Color(modelColor[0], modelColor[1], modelColor[2]) : new Color(1, 1, 1),
                 colorMix: 0,

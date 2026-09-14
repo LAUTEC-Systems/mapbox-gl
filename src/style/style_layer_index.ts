@@ -10,8 +10,8 @@ export type LayerConfigs = Record<string, LayerSpecification>;
 export type Family<Layer extends TypedStyleLayer> = Array<Layer>;
 
 class StyleLayerIndex {
-    scope: string;
-    familiesBySource: Record<string, Record<string, Array<Family<TypedStyleLayer>>>>;
+    scope!: string;
+    familiesBySource!: Record<string, Record<string, Array<Family<TypedStyleLayer>>>>;
     keyCache: Record<string, string>;
 
     _layerConfigs: LayerConfigs;
@@ -61,6 +61,13 @@ class StyleLayerIndex {
             if (layer.visibility === 'none') {
                 continue;
             }
+
+            // Preload the lazy module here so it overlaps the first tile fetch instead of
+            // serialising behind the `WorkerTile.parse` gate, which stays as the backstop.
+            // Must stay below the visibility check: Standard's `building` layer always
+            // `mayUse`s HD but is usually config-hidden, and would drag in the gen WASM.
+            // eslint-disable-next-line @typescript-eslint/no-floating-promises
+            layer.prepare();
 
             const sourceId = layer.source || '';
             let sourceGroup = this.familiesBySource[sourceId];

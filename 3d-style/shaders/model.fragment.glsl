@@ -37,17 +37,17 @@ in float v_depth_shadows;
 uniform vec4 u_occlusionTextureTransform;
 #endif
 
-#pragma mapbox: define-attribute highp vec3 normal_3f
+#pragma mapbox: define-attribute highp vec4 normal_4n
 #pragma mapbox: define-attribute highp vec3 color_3f
 #pragma mapbox: define-attribute highp vec4 color_4f
 #pragma mapbox: define-attribute highp vec2 uv_2f
 
-#pragma mapbox: initialize-attribute highp vec3 normal_3f
+#pragma mapbox: initialize-attribute highp vec4 normal_4n
 #pragma mapbox: initialize-attribute highp vec3 color_3f
 #pragma mapbox: initialize-attribute highp vec4 color_4f
 #pragma mapbox: initialize-attribute highp vec2 uv_2f
 
-#ifdef HAS_ATTRIBUTE_a_pbr
+#ifdef HAS_ATTRIBUTE_a_feature
 in lowp vec4 v_roughness_metallic_emissive_alpha;
 in mediump vec4 v_height_based_emission_params;
 #endif
@@ -76,7 +76,7 @@ uniform sampler2D u_emissionTexture;
 uniform highp sampler3D u_lutTexture;
 #endif
 
-#ifdef FEATURE_CUTOUT_VERTEX
+#if defined(FEATURE_CUTOUT_VERTEX) || defined(ROUTE_CORRIDOR)
 in highp float v_cutout_factor;
 #endif
 
@@ -168,7 +168,7 @@ vec4 getBaseColor() {
     albedo *= vec4(color_3f, 1.0);
 #endif
 
-#ifdef HAS_ATTRIBUTE_a_pbr
+#ifdef HAS_ATTRIBUTE_a_feature
 #else
 #ifdef HAS_ATTRIBUTE_a_color_4f
     albedo *= color_4f;
@@ -243,8 +243,8 @@ highp mat3 cotangentFrame(highp vec3 N, highp vec3 p, highp vec2 uv ) {
 
 highp vec3 getNormal(){
     highp vec3 n;
-#ifdef HAS_ATTRIBUTE_a_normal_3f
-    n = normalize(normal_3f);
+#ifdef HAS_ATTRIBUTE_a_normal_4n
+    n = normalize(normal_4n.xyz);
 #else
     // Workaround for Adreno GPUs not able to do dFdx( v_position_height )
     // three.js/.../normal_fragment_begin.glsl.js
@@ -286,7 +286,7 @@ Material getPBRMaterial() {
     mat.baseColor = getBaseColor();
     mat.perceptualRoughness = u_roughnessFactor;
     mat.metallic = u_metallicFactor;
-#ifdef HAS_ATTRIBUTE_a_pbr
+#ifdef HAS_ATTRIBUTE_a_feature
     mat.perceptualRoughness = v_roughness_metallic_emissive_alpha.x;
     mat.metallic = v_roughness_metallic_emissive_alpha.y;
     mat.baseColor.w *= v_roughness_metallic_emissive_alpha.w;
@@ -531,7 +531,7 @@ vec4 finalColor;
 
     // Apply transparency
     float opacity = mat.baseColor.w * u_opacity;
-#ifdef HAS_ATTRIBUTE_a_pbr
+#ifdef HAS_ATTRIBUTE_a_feature
     float resEmission = v_roughness_metallic_emissive_alpha.z;
 
     resEmission *= v_height_based_emission_params.z + v_height_based_emission_params.w * pow(clamp(v_height_based_emission_params.x, 0.0, 1.0), v_height_based_emission_params.y);
@@ -542,7 +542,7 @@ vec4 finalColor;
 #endif
     color = mix(color, color_mix, min(1.0, resEmission));
 #ifdef HAS_ATTRIBUTE_a_color_4f
-    // pbr includes color. If pbr is used, color_4f is used to pass information about light geometry.
+    // a_feature includes color. If a_feature is used, color_4f is used to pass information about light geometry.
     // calculate distance to line segment, multiplier 1.3 additionally deattenuates towards extruded corners.
     float distance = length(vec2(1.3 * max(0.0, abs(color_4f.x) - color_4f.z), color_4f.y));
     distance +=  mix(0.5, 0.0, clamp(resEmission - 1.0, 0.0, 1.0));
@@ -591,12 +591,19 @@ vec4 finalColor;
     finalColor = applyCutout(finalColor, v_position_height.w);
 #endif
 
+#ifdef ROUTE_CORRIDOR
+    int index = viewport_dither_index(gl_FragCoord.xy);
+    if (v_cutout_factor < DITHER_THRESHOLDS[index]) {
+        discard;
+    }
+#else
 #ifdef FEATURE_CUTOUT_VERTEX
-    // Apply pre-calculated cutout factor
+    // Legacy above-cutout / texture path: apply pre-calculated cutout factor
     apply_feature_cutout_dither(gl_FragCoord, v_cutout_factor);
 #else
 #ifdef FEATURE_CUTOUT
     finalColor = apply_feature_cutout(finalColor, gl_FragCoord, get_cutout_factors(gl_FragCoord).x, 0.0);
+#endif
 #endif
 #endif
 

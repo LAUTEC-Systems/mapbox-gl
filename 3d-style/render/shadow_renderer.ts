@@ -27,6 +27,7 @@ import type Framebuffer from '../../src/gl/framebuffer';
 import type Painter from '../../src/render/painter';
 import type Program from '../../src/render/program';
 import type Style from '../../src/style/style';
+import type {TypedStyleLayer} from '../../src/style/style_layer/typed_style_layer';
 import type {UniformValues} from '../../src/render/uniform_binding';
 import type {LightProps as Directional} from '../style/directional_light_properties';
 import type {ShadowUniformsType} from '../render/shadow_uniforms';
@@ -169,7 +170,7 @@ class ShadowReceivers {
         return lastCascade + 1;
     }
 
-    receivers: Record<number, ShadowReceiver>;
+    receivers!: Record<number, ShadowReceiver>;
 }
 
 export class ShadowRenderer {
@@ -182,7 +183,7 @@ export class ShadowRenderer {
     _receivers: ShadowReceivers;
     _depthMode: DepthMode;
     _uniformValues: UniformValues<ShadowUniformsType>;
-    shadowDirection: vec3;
+    shadowDirection!: vec3;
     useNormalOffset: boolean;
 
     _forceDisable: boolean;
@@ -232,7 +233,30 @@ export class ShadowRenderer {
         this._cascades = [];
     }
 
-    updateShadowParameters(transform: Transform, directionalLight?: Lights<Directional> | null) {
+    // Whether a layer contains a shader caster with its geometry available.
+    _hasCasterGeometry(layer: TypedStyleLayer, casterCoords: {
+        [_: string]: Array<OverscaledTileID>;
+    }): boolean {
+        const sourceCache = this.painter.style.getLayerSourceCache(layer);
+        if (!sourceCache) return false;
+
+        const source = sourceCache.getSource();
+        if (source.type === 'model') return source.getModels().length > 0;
+
+        const coords = casterCoords[sourceCache.id];
+        if (!coords) return false;
+
+        for (const coord of coords) {
+            const tile = sourceCache.getTile(coord);
+            if (tile && tile.getBucket(layer)) return true;
+        }
+
+        return false;
+    }
+
+    updateShadowParameters(transform: Transform, directionalLight: Lights<Directional> | null | undefined, casterCoords: {
+        [_: string]: Array<OverscaledTileID>;
+    }) {
         const painter = this.painter;
 
         Debug.run(() => {
@@ -267,7 +291,7 @@ export class ShadowRenderer {
         let layerIdx = 0;
         for (const layerId of painter.style.order) {
             const layer = painter.style._mergedLayers[layerId];
-            if (layer.hasShadowPass() && !layer.isHidden(transform.zoom)) {
+            if (layer.hasShadowPass() && !layer.isHidden(transform.zoom) && this._hasCasterGeometry(layer, casterCoords)) {
                 lastShadowLayer = layerIdx;
             }
             // If drawBeforeLayer is specified, ground shadows will be rendered right before that layer.

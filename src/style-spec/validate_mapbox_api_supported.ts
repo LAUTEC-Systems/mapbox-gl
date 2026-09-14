@@ -24,7 +24,8 @@ type MapboxStyleSpecification = StyleSpecification & {
 };
 
 const SUPPORTED_SPEC_VERSION = 8;
-const MAX_SOURCES_IN_STYLE = 15;
+const MAX_SOURCES_IN_STYLE = 64;
+const MAX_TILESETS_IN_SOURCE = 15;
 
 function isValid(value: string | null | undefined, regex: RegExp): boolean {
     if (!value || !isString(value)) return true;
@@ -33,13 +34,13 @@ function isValid(value: string | null | undefined, regex: RegExp): boolean {
 
 function getSourceCount(source: SourceSpecification): number {
     if ('url' in source) {
-        return source.url.split(',').length;
+        return source.url!.split(',').length;
     } else {
         return 0;
     }
 }
 
-function getAllowedKeyErrors(obj: object, keys: string[], path?: string | null): Array<ValidationError> {
+function getAllowedKeyErrors(obj: Record<string, unknown>, keys: string[], path?: string | null): Array<ValidationError> {
     const allowed = new Set(keys);
     const errors: ValidationError[] = [];
     Object.keys(obj).forEach(k => {
@@ -51,7 +52,7 @@ function getAllowedKeyErrors(obj: object, keys: string[], path?: string | null):
     return errors;
 }
 
-const acceptedSourceTypes = new Set<SourceSpecification['type']>(['vector', 'raster', 'raster-dem', 'raster-array', 'model', 'batched-model']);
+const acceptedSourceTypes: ReadonlySet<SourceSpecification['type']> = new Set<SourceSpecification['type']>(['vector', 'raster', 'raster-dem', 'raster-array', 'model', 'batched-model']);
 function getSourceErrors(source: SourceSpecification, i: number): Array<ValidationError> {
     const errors: ValidationError[] = [];
 
@@ -78,8 +79,19 @@ function getSourceErrors(source: SourceSpecification, i: number): Array<Validati
 function getMaxSourcesErrors(sourcesCount: number): Array<ValidationError> {
     const errors: ValidationError[] = [];
     if (sourcesCount > MAX_SOURCES_IN_STYLE) {
-        errors.push(new ValidationError('sources', null, `Styles must contain ${MAX_SOURCES_IN_STYLE} or fewer sources`));
+        errors.push(new ValidationError('sources', null, `Styles must contain ${MAX_SOURCES_IN_STYLE} or fewer tilesets`));
     }
+    return errors;
+}
+
+function getMaxTilesetsErrors(sources: SourcesSpecification): Array<ValidationError> {
+    const errors: ValidationError[] = [];
+    Object.keys(sources).forEach((s: string, i: number) => {
+        const source = sources[s]!;
+        if (getSourceCount(source) > MAX_TILESETS_IN_SOURCE) {
+            errors.push(new ValidationError(`sources[${i}].url`, (source as {url?: string}).url, `Sources must contain ${MAX_TILESETS_IN_SOURCE} or fewer tilesets`));
+        }
+    });
     return errors;
 }
 
@@ -87,21 +99,20 @@ function getSourcesErrors(sources: SourcesSpecification): {
     errors: Array<ValidationError>;
     sourcesCount: number;
 } {
-    const errors = [];
+    const errors: ValidationError[] = [];
     let sourcesCount = 0;
 
     Object.keys(sources).forEach((s: string, i: number) => {
-        const sourceErrors = getSourceErrors(sources[s], i);
+        const sourceErrors = getSourceErrors(sources[s]!, i);
 
         // If source has errors, skip counting
         if (!sourceErrors.length) {
-            sourcesCount = sourcesCount + getSourceCount(sources[s]);
+            sourcesCount = sourcesCount + getSourceCount(sources[s]!);
         }
 
         errors.push(...sourceErrors);
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     return {errors, sourcesCount};
 }
 
@@ -226,6 +237,7 @@ export default function validateMapboxApiSupported(style: MapboxStyleSpecificati
         const sourcesErrors = getSourcesErrors(s.sources);
         sourcesCount += sourcesErrors.sourcesCount;
         errors = errors.concat(sourcesErrors.errors);
+        errors = errors.concat(getMaxTilesetsErrors(s.sources));
     }
 
     if (s.imports) {

@@ -186,12 +186,12 @@ export class SymbolPropertyBinderUBO {
 
     // True when no data-driven property uses measure-light expressions.
     // When true, updateDynamicExpressions can be skipped on brightness-only changes.
-    isLightConstant: boolean;
+    isLightConstant!: boolean;
 
     // Bitmask: 1 = property is a constant camera (zoom-only) expression, computed in updateHeader.
     // CPU-only — camera properties go through u_spp_* uniforms (re-evaluated at render zoom),
     // not the GPU UBO, so this is not part of the header.
-    cameraMask: number;
+    cameraMask!: number;
 
     // Per-property zoom classification (ZOOM_* enum), one byte per property, computed in
     // updateHeader. CPU-side bookkeeping that decides which zoom range the evaluator computes; the
@@ -697,12 +697,12 @@ export class SymbolPropertyBinderUBO {
             prop.isConstant() ? prop.constantOr(defaultVal) :
             this._evalAt(prop, ctx.params, ctx);
 
-        const minVal = min != null ? min : defaultVal;
+        const minVal = min ?? defaultVal;
         evalFlatScratch[flatOffset] = minVal;
 
         if (isZoomDep) {
             const max = this._evalAt(prop, ctx.paramsNext, ctx);
-            evalFlatScratch[flatOffset + 1] = max != null ? max : defaultVal;
+            evalFlatScratch[flatOffset + 1] = max ?? defaultVal;
         } else {
             evalFlatScratch[flatOffset + 1] = minVal;
         }
@@ -1104,7 +1104,7 @@ export class SymbolPropertyBinderUBO {
             const isCamera = !!(this.cameraMask & (1 << propIdx));
             if (isCamera && renderParams) {
                 const evaluated = prop.property.evaluate(prop.value, renderParams, emptyFeature, {}, undefined, []);
-                return evaluated != null ? evaluated : defaultVal;
+                return evaluated ?? defaultVal;
             }
             return prop.constantOr(defaultVal);
         };

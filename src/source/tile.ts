@@ -116,6 +116,14 @@ class Tile {
     uses: number;
     tileSize: number;
     tileZoom: number;
+    /**
+     * overscaledZ of the ideal cover tile this tile stands in for.
+     * Equals `tileID.overscaledZ` for ideal tiles; for retained parents/children
+     * while an ideal tile loads, equals that ideal tile's overscaledZ.
+     * Used to re-anchor dashed line floorwidth without affecting pitched LOD rings.
+     * @private
+     */
+    dashIdealZ: number;
     buckets: {
         [_: string]: Bucket;
     };
@@ -130,26 +138,26 @@ class Tile {
     expirationTime: number | null;
     expiredRequestCount: number;
     state: TileState;
-    timeAdded: number | null;
+    timeAdded!: number | null;
     fadeEndTime: number | undefined;
     collisionBoxArray: CollisionBoxArray | null | undefined;
     redoWhenDone: boolean;
-    showCollisionBoxes: boolean;
+    showCollisionBoxes!: boolean;
     placementSource: unknown;
     actor: Actor<WorkerInbox> | null | undefined;
-    vtLayers: {
+    vtLayers!: {
         [_: string]: VectorTileLayer;
     };
     renderSourceType: RenderSourceType | null | undefined;
     frcCoveragePolygons: FrcCoveragePolygons | null | undefined;
-    hasDeferredRoadStructure: boolean;
+    hasDeferredRoadStructure!: boolean;
     parsedElevationFeatures: ElevationFeature[] | undefined;
     // Monotonic parse generation for change detection (avoids content comparison).
-    parsedElevationGeneration: number;
-    hasDeferredElevationFeatures: boolean;
+    parsedElevationGeneration!: number;
+    hasDeferredElevationFeatures!: boolean;
     isExtraShadowCaster: boolean | null | undefined;
     isRaster: boolean | null | undefined;
-    _tileTransform: TileTransform;
+    _tileTransform!: TileTransform;
 
     neighboringTiles?: {
         [key: number]: {backfilled: boolean}
@@ -163,7 +171,7 @@ class Tile {
     emissiveTexture: Texture | null | undefined | UserManagedTexture;
     hillshadeFBO: Framebuffer | null | undefined;
     demTexture: Texture | null | undefined;
-    refreshedUponExpiration: boolean;
+    refreshedUponExpiration!: boolean;
     reloadCallback: WorkerSourceVectorTileCallback | null | undefined;
     resourceTiming: Array<PerformanceResourceTiming> | null | undefined;
     queryPadding: number;
@@ -174,7 +182,7 @@ class Tile {
     hasTunnelGeometry: boolean;
     hasRTLText: boolean;
     dependencies: Record<string, Record<StringifiedImageId, boolean>>;
-    projection: Projection;
+    projection!: Projection;
 
     queryGeometryDebugViz: TileSpaceDebugBuffer | null | undefined;
     queryBoundsDebugViz: TileSpaceDebugBuffer | null | undefined;
@@ -182,13 +190,13 @@ class Tile {
     _tileDebugBuffer: VertexBuffer | null | undefined;
     _tileBoundsBuffer: VertexBuffer | null | undefined;
     _tileDebugIndexBuffer: IndexBuffer | null | undefined;
-    _tileBoundsIndexBuffer: IndexBuffer;
-    _tileDebugSegments: SegmentVector;
-    _tileBoundsSegments: SegmentVector;
+    _tileBoundsIndexBuffer!: IndexBuffer;
+    _tileDebugSegments!: SegmentVector;
+    _tileBoundsSegments!: SegmentVector;
     _globeTileDebugBorderBuffer: VertexBuffer | null | undefined;
     _tileDebugTextBuffer: VertexBuffer | null | undefined;
-    _tileDebugTextSegments: SegmentVector;
-    _tileDebugTextIndexBuffer: IndexBuffer;
+    _tileDebugTextSegments!: SegmentVector;
+    _tileDebugTextIndexBuffer!: IndexBuffer;
     _globeTileDebugTextBuffer: VertexBuffer | null | undefined;
     _lastUpdatedBrightness: number | null | undefined;
     _hasAppearances: boolean | null;
@@ -208,6 +216,7 @@ class Tile {
         this.uses = 0;
         this.tileSize = size;
         this.tileZoom = tileZoom;
+        this.dashIdealZ = tileID.overscaledZ;
         this.buckets = {};
         this.expirationTime = null;
         this.queryPadding = 0;
@@ -353,6 +362,15 @@ class Tile {
             this.lineAtlas = data.lineAtlas;
         }
         this._lastUpdatedBrightness = data.brightness;
+    }
+
+    // Drops what new placement decided about this tile's symbols (see Bucket#resetPlacementVisibility).
+    // Called when the tile enters the render set again after placement has stopped seeing it, e.g. when
+    // it comes back from the tile cache.
+    resetPlacementVisibility() {
+        for (const id in this.buckets) {
+            this.buckets[id].resetPlacementVisibility?.();
+        }
     }
 
     /**

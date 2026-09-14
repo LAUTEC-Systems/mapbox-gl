@@ -4,11 +4,10 @@ import {ICON_PADDING} from '../render/image_atlas';
 import {SDF_SCALE} from '../render/glyph_manager';
 import {isVerticalClosePunctuation, isVerticalOpenPunctuation} from '../util/verticalize_punctuation';
 import ONE_EM from './one_em';
-import {warnOnce} from '../util/util';
 
 import type {ImagePosition} from '../render/image_atlas';
 import type Anchor from './anchor';
-import type {PositionedIcon, Shaping} from './shaping';
+import type {PositionedIcon, Shaping} from './shaping_shared';
 import type SymbolStyleLayer from '../style/style_layer/symbol_style_layer';
 import type {Feature} from '../style-spec/expression/index';
 import type {StyleImageMap} from '../style/style_image';
@@ -330,10 +329,6 @@ export function getGlyphQuads(
             if (positionedGlyph.image) {
                 const image = imageMap.get(positionedGlyph.image.toString());
                 if (!image) continue;
-                if (image.sdf) {
-                    warnOnce("SDF images are not supported in formatted text and will be ignored.");
-                    continue;
-                }
                 isSDF = false;
                 pixelRatio = image.pixelRatio;
                 rectBuffer = ICON_PADDING / pixelRatio;

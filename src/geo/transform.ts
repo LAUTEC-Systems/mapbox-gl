@@ -88,11 +88,11 @@ type QuadrantMask = typeof QuadrantVisibility[keyof typeof QuadrantVisibility];
  */
 class Transform {
     tileSize: number;
-    tileZoom: number;
+    tileZoom!: number;
     maxBounds: LngLatBounds | null | undefined;
 
     // 2^zoom (worldSize = tileSize * scale)
-    scale: number;
+    scale!: number;
 
     // Map viewport size (not including the pixel ratio)
     width: number;
@@ -102,17 +102,17 @@ class Transform {
     angle: number;
 
     // 2D rotation matrix in the horizontal plane, as a function of bearing
-    rotationMatrix: [number, number, number, number];
+    rotationMatrix!: [number, number, number, number];
 
     // Zoom, modulo 1
-    zoomFraction: number;
+    zoomFraction!: number;
 
     // The scale factor component of the conversion from pixels ([0, w] x [h, 0]) to GL
     // NDC ([1, -1] x [1, -1]) (note flipped y)
-    pixelsToGLUnits: [number, number];
+    pixelsToGLUnits!: [number, number];
 
     // Distance from camera to the center, in screen pixel units, independent of zoom
-    cameraToCenterDistance: number;
+    cameraToCenterDistance!: number;
 
     // Projection from mercator coordinates ([0, 0] nw, [1, 1] se) to GL clip coordinates
     mercatorMatrix: mat4;
@@ -122,7 +122,7 @@ class Transform {
     mercatorFogMatrix: mat4;
 
     // Projection from world coordinates (mercator scaled by worldSize) to clip coordinates
-    projMatrix: mat4;
+    projMatrix!: mat4;
     invProjMatrix: mat4;
 
     // Projection matrix with expanded farZ on globe projection
@@ -135,7 +135,7 @@ class Transform {
     pixelMatrix: mat4;
     pixelMatrixInverse: mat4;
 
-    worldToFogMatrix: mat4;
+    worldToFogMatrix!: mat4;
     skyboxMatrix: mat4;
 
     starsProjMatrix: mat4;
@@ -148,38 +148,38 @@ class Transform {
     labelPlaneMatrix: mat4;
 
     // globe coordinate transformation matrix
-    globeMatrix: mat4;
+    globeMatrix!: mat4;
 
     globeCenterInViewSpace: [number, number, number];
     globeRadius: number;
 
-    inverseAdjustmentMatrix: mat2;
+    inverseAdjustmentMatrix!: mat2;
 
-    mercatorFromTransition: boolean;
+    mercatorFromTransition!: boolean;
 
-    minLng: number;
-    maxLng: number;
-    minLat: number;
-    maxLat: number;
-    worldMinX: number;
-    worldMaxX: number;
-    worldMinY: number;
-    worldMaxY: number;
+    minLng!: number;
+    maxLng!: number;
+    minLat!: number;
+    maxLat!: number;
+    worldMinX!: number;
+    worldMaxX!: number;
+    worldMinY!: number;
+    worldMaxY!: number;
 
-    cameraFrustum: Frustum;
-    frustumCorners: FrustumCorners;
+    cameraFrustum!: Frustum;
+    frustumCorners!: FrustumCorners;
     _tileCoverLift: number;
 
     freezeTileCoverage: boolean;
     cameraElevationReference: ElevationReference;
     fogCullDistSq: number | null | undefined;
     _averageElevation: number;
-    projectionOptions: ProjectionSpecification;
-    projection: Projection;
+    projectionOptions!: ProjectionSpecification;
+    projection!: Projection;
     _elevation: Elevation | null | undefined;
     _fov: number;
     _pitch: number;
-    _zoom: number;
+    _zoom!: number;
     _seaLevelZoom: number | null | undefined;
     _unmodified: boolean;
     _renderWorldCopies: boolean;
@@ -189,14 +189,14 @@ class Transform {
     _maxPitch: number;
     _center: LngLat;
     _edgeInsets: EdgeInsets;
-    _constraining: boolean;
+    _constraining!: boolean;
     _projMatrixCache: {
         [_: number]: mat4;
     };
     _alignedProjMatrixCache: {
         [_: number]: mat4;
     };
-    _pixelsToTileUnitsCache: {
+    _pixelsToTileUnitsCache!: {
         [_: number]: mat2;
     };
     _expandedProjMatrixCache: {
@@ -216,8 +216,8 @@ class Transform {
     _nearZ: number;
     _farZ: number;
     _nearClipOffset: number;
-    _mercatorScaleRatio: number;
-    _isCameraConstrained: boolean;
+    _mercatorScaleRatio!: number;
+    _isCameraConstrained!: boolean;
 
     _orthographicProjectionAtLowPitch: boolean;
 
@@ -233,8 +233,8 @@ class Transform {
         this._minZoom = minZoom || DEFAULT_MIN_ZOOM;
         this._maxZoom = maxZoom || 22;
 
-        this._minPitch = (minPitch === undefined || minPitch === null) ? 0 : minPitch;
-        this._maxPitch = (maxPitch === undefined || maxPitch === null) ? 60 : maxPitch;
+        this._minPitch = minPitch ?? 0;
+        this._maxPitch = maxPitch ?? 60;
 
         this.setProjection(projection);
         this.setMaxBounds(bounds);
@@ -536,6 +536,11 @@ class Transform {
     get fovY(): number {
         const focalLength = 1.0 / Math.tan(this.fovX * 0.5);
         return 2 * Math.atan((1.0 / this.aspect) / focalLength);
+    }
+
+    // `_fov` is the vertical field of view.
+    get horizontalFov(): number {
+        return radToDeg(2 * Math.atan(Math.tan(this._fov * 0.5) * this.aspect));
     }
 
     get averageElevation(): number {
@@ -1862,7 +1867,7 @@ class Transform {
      * @private
      */
     pointRayIntersection(p: Point, z?: number | null): RayIntersectionResult {
-        const targetZ = (z !== undefined && z !== null) ? z : this._centerAltitude;
+        const targetZ = z ?? this._centerAltitude;
         // Since we don't know the correct projected z value for the point,
         // unproject two points to get a line and then find the point on that
         // line with z=0.
@@ -2785,7 +2790,7 @@ class Transform {
         // drape raster overscale artifacts or cut terrain (see under it) as it gets clipped on
         // near plane. Returned value is in mercator coordinates.
         const MAX_DRAPE_OVERZOOM = 4;
-        const zoom = Math.min((this._seaLevelZoom != null ? this._seaLevelZoom : this._zoom), this._maxZoom) + MAX_DRAPE_OVERZOOM;
+        const zoom = Math.min((this._seaLevelZoom ?? this._zoom), this._maxZoom) + MAX_DRAPE_OVERZOOM;
         return this._mercatorZfromZoom(zoom);
     }
 
